@@ -30,7 +30,10 @@ int main(int argc, char **argv)
     struct mCore *core = mCoreFind(argv[1]);
     if (!core || !core->init(core)) { fprintf(stderr, "no core\n"); return 1; }
     mCoreInitConfig(core, NULL);
+    /* a CGB-compatible ROM takes its model from cgb.model (gb.model is for DMG-only ROMs) */
     mCoreConfigSetValue(&core->config, "gb.model", strcmp(argv[2], "dmg") == 0 ? "DMG" : "CGB");
+    mCoreConfigSetValue(&core->config, "cgb.model", strcmp(argv[2], "dmg") == 0 ? "DMG" : "CGB");
+    mCoreConfigSetValue(&core->config, "cgb.hybridModel", strcmp(argv[2], "dmg") == 0 ? "DMG" : "CGB");
     mCoreConfigSetValue(&core->config, "useBios", "0");
     core->loadConfig(core, &core->config);
     unsigned w, h;

@@ -46,7 +46,7 @@ extern int8_t shake_x, shake_y;
 extern uint8_t ending_req;
 extern uint8_t heart_revealed;
 extern uint8_t glow_on;
-extern uint8_t near_warm;
+extern uint8_t near_warm, warm6;   /* warm6: lit fire / beacon within 6 (main loop, every 8 frames) */
 uint8_t warm_within(uint8_t r) BANKED;   /* lit fire / beacon within r cells (mods table) */          /* a lit fire / beacon within 3 cells */
 extern uint8_t hint_x, hint_y, hint_on;
 extern uint8_t band_mark_x[5];

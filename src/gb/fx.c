@@ -120,8 +120,10 @@ static void storm_tick(void)
     }
     if (lightning_t) {
         lightning_t--;
-        pal_flash = (uint8_t)(lightning_t == 6 || lightning_t == 5 || lightning_t == 2);
-        pal_apply();
+        {
+            uint8_t fl = (uint8_t)(lightning_t == 6 || lightning_t == 5 || lightning_t == 2);
+            if (fl != pal_flash) { pal_flash = fl; pal_apply(); }
+        }
         return;
     }
     if (weather == WX_STORM && game_state == GS_WORLD && srand8() == 7 && (srand8() & 3) == 0) {
@@ -168,7 +170,6 @@ void fx_redraw(void) BANKED
 
 void fx_update(void) BANKED
 {
-    if (!FRAME_LATE()) pal_tick();
     glow_draw();
     if (FRAME_LATE()) return;       /* the rest can wait a frame */
     weather_draw();

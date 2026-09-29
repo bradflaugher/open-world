@@ -44,7 +44,7 @@ extern uint8_t pal_fog;                   /* 0..8 contrast collapse */
 extern uint8_t pal_fade;                  /* 0..16 towards white */
 extern uint8_t pal_flash;                 /* 1: lightning (all light) */
 extern uint8_t pal_band_bright;           /* 0..16 band towards white (the ending) */
-void pal_tick(void) BANKED;                /* advance an incremental CGB palette job */
+extern volatile uint8_t pal_dirty;           /* palettes to recompute (set from the ISR) */
 void pal_apply(void) BANKED;                     /* compute palettes into nx_* / CGB buffers */
 void pal_title(void) BANKED;                     /* CGB: title palettes */
 void pal_upload_now(void);

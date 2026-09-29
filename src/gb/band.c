@@ -133,15 +133,42 @@ void band_reset_angle(void) BANKED
     mark_rr = 0;
 }
 
-static void nearest_cairn(void)
+static volatile uint8_t mark_new;
+
+static void nearest_cairn(uint16_t mx, uint16_t my)
 {
-    uint8_t i;
+    uint8_t i, n = 0xFF;
     uint16_t best = 0xFFFF, d;
-    cairn_near = 0xFF;
     for (i = 0; i < cairn_n; i++) {
-        d = world_dist(pl_mx, pl_my, cairns[i].x, cairns[i].y);
-        if (d < best && d > 1) { best = d; cairn_near = i; }
+        d = world_dist(mx, my, cairns[i].x, cairns[i].y);
+        if (d < best && d > 1) { best = d; n = i; }
     }
+    cairn_near = n;             /* one byte store: the ISR never sees a half-done search */
+}
+
+/* Main loop: one marker bearing per call (world_bearing is a banked CORDIC, far too slow for
+ * the VBL game frame). The results are single bytes, picked up by band_update. */
+void band_bearing_task(void) BANKED
+{
+    uint16_t mx, my;
+    uint8_t b = 0, c;
+    __critical { mx = pl_mx; my = pl_my; }
+    switch (mark_rr) {
+    case 0: case 1: case 2:
+        b = world_bearing(mx, my, world.beacon[mark_rr].x, world.beacon[mark_rr].y);
+        break;
+    case 3:
+        b = world_bearing(mx, my, world.heart.x, world.heart.y);
+        break;
+    case 4:
+        nearest_cairn(mx, my);
+        c = cairn_near;
+        if (c == 0xFF) { mark_new = 1; mark_rr = 0; return; }
+        b = world_bearing(mx, my, cairns[c].x, cairns[c].y);
+        break;
+    }
+    if (b != mark_b[mark_rr]) { mark_b[mark_rr] = b; mark_new = 1; }
+    if (++mark_rr >= 5) mark_rr = 0;
 }
 
 void band_update(void) BANKED
@@ -160,28 +187,13 @@ void band_update(void) BANKED
     a = (uint8_t)(band_ang >> 8);
     nx_band_scx = (uint8_t)(a - 80);
 
-    /* one bearing refreshed every 8 frames (world_bearing is a banked CORDIC) */
-    if ((vbl_frames & 7) == 1 && !FRAME_LATE()) switch (mark_rr) {
-    case 0: case 1: case 2:
-        mark_b[mark_rr] = world_bearing(pl_mx, pl_my, world.beacon[mark_rr].x, world.beacon[mark_rr].y);
-        break;
-    case 3:
-        mark_b[3] = world_bearing(pl_mx, pl_my, world.heart.x, world.heart.y);
-        break;
-    case 4:
-        nearest_cairn();
-        if (cairn_near != 0xFF)
-            mark_b[4] = world_bearing(pl_mx, pl_my, cairns[cairn_near].x, cairns[cairn_near].y);
-        break;
-    }
-    if ((vbl_frames & 7) == 1 && ++mark_rr >= 5) mark_rr = 0;
-
     /* markers move only when the band turns or a bearing / state changes */
     i = (uint8_t)(beacons_lit | (heart_revealed << 3) | ((cairn_near != 0xFF) << 4));
-    if (a == mark_last_a && i == mark_last_state && (vbl_frames & 7) != 2) return;
+    if (a == mark_last_a && i == mark_last_state && !mark_new) return;
     if (FRAME_LATE()) return;
     mark_last_a = a;
     mark_last_state = i;
+    mark_new = 0;
     for (i = 0; i < 5; i++) {
         show = 1;
         if (i < 3) {
