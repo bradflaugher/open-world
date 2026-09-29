@@ -39,7 +39,11 @@ uint8_t near_warm;
 uint16_t dbg_world_frames;
 uint8_t dbg_ly[10];
 uint8_t dbg_refills;
-uint16_t dbg_t[10], dbg_dmax[10];
+uint16_t dbg_t[10], dbg_dmax[10], dbg_tm[8];
+static uint16_t tm0;
+#define TNOW() ((uint16_t)((uint16_t)vbl_frames * 154u + (LY_REG >= 144 ? LY_REG - 154 : LY_REG)))
+#define TM_B() tm0 = TNOW()
+#define TM_E(k) do { uint16_t _d = (uint16_t)(TNOW() - tm0); if (_d < 3000 && _d > dbg_tm[k]) dbg_tm[k] = _d; } while (0)
 #define STAMP(i) do { uint8_t _l = LY_REG; dbg_ly[i] = _l; dbg_t[i] = (uint16_t)((uint16_t)vbl_frames * 154u + (_l >= 144 ? _l - 154 : _l)); } while (0)
 
 static uint8_t prev_keys;
@@ -49,6 +53,20 @@ static uint16_t wx_region_x = 0xFFFF, wx_region_y = 0xFFFF, wx_day = 0xFFFF;
 static uint8_t wake_t;
 static uint8_t tick8;
 static uint16_t shake_rng = 0xBEEF;
+
+/* biome from the metatile underfoot (world_biome is far too slow to call from the loop) */
+static const uint8_t mt_biome[MT_COUNT] = {
+    B_SEA, B_SEA, B_SHALLOW, B_SHALLOW, B_SHORE, B_MEADOW, B_MEADOW, B_MEADOW,   /* sea .. flowers */
+    B_FOREST, B_FOREST, B_TUNDRA, B_TUNDRA, B_DESERT, B_DESERT, B_ROCK, B_ROCK,   /* tree .. peak */
+    B_ASH, B_ASH, B_ASH, B_RUINS, B_RUINS, B_RUINS, B_RUINS, 0xFF,               /* ash .. road */
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF        /* set pieces keep */
+};
+
+static void biome_update(void)
+{
+    uint8_t b = mt_biome[land_rel(0, 0)];
+    if (b != 0xFF) biome_here = b;
+}
 
 static void input(void)
 {
@@ -188,7 +206,7 @@ static void weather_update(void)
     wx_region_y = ry;
     wx_day = day_count;
     h = world_detail((uint16_t)(rx * 13u + day_count * 7u + 0x51u), (uint16_t)(ry * 29u + (day_count >> 1)));
-    b = world_biome(pl_mx, pl_my);
+    b = biome_here;
     if (h < 150) w = WX_CLEAR;
     else if (h < 195) w = WX_RAIN;
     else if (h < 230) w = WX_FOG;
@@ -255,17 +273,17 @@ static void time_tick(void)
     if (pl_state == PL_SLEEP) tf = 0;
     tod = (uint16_t)(tod + tf);
     if (tod >= DAY_FRAMES) { tod -= DAY_FRAMES; day_count++; }
-    phase_update(0);
+    TM_B(); phase_update(0); TM_E(0);
     tick8++;
     /* spread the occasional work over different frames */
     switch (tick8 & 31) {
-    case 3: case 11: case 19: case 27: scan_warm(); break;
-    case 7: case 23: visit_mark(); break;
-    case 15: biome_here = world_biome(pl_mx, pl_my); break;
-    case 16: weather_update(); break;
-    case 17: ambient_update(); break;
+    case 3: case 11: case 19: case 27: TM_B(); scan_warm(); TM_E(1); break;
+    case 7: case 23: TM_B(); visit_mark(); TM_E(2); break;
+    case 15: TM_B(); biome_update(); TM_E(3); break;
+    case 16: TM_B(); weather_update(); TM_E(4); break;
+    case 17: TM_B(); ambient_update(); TM_E(5); break;
     }
-    warmth_tick(tf);
+    TM_B(); warmth_tick(tf); TM_E(6);
 }
 
 /* ---------------------------------------------------------------- transitions */
@@ -321,7 +339,8 @@ void world_enter(uint8_t fresh) BANKED
     phase_update(1);
     heart_revealed = (uint8_t)(beacons_lit == 7);
     ambient_beacons(beacons_lit);
-    biome_here = world_biome(pl_mx, pl_my);
+    biome_here = B_MEADOW;
+    biome_update();
     wx_region_x = 0xFFFF;
     weather_update();
     pal_fog = weather == WX_FOG ? 8 : 0;
@@ -471,7 +490,7 @@ static void world_loop(void)
             for (;;) {
                 if (!land_job && bq_pending() > 40) break;
                 ly = LY_REG;
-                if (vbl_frames != start_vbl || (ly >= 112 && ly < 144)) break;
+                if (vbl_frames != start_vbl || (ly >= 136 && ly < 144)) break;
                 if (land_update(cam_mx, cam_my, 1)) break;
 
                 if (!land_job && (uint16_t)((uint16_t)(cam_mx - 2) - land_x0) == 0 &&
