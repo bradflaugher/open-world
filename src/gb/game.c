@@ -51,8 +51,8 @@ static uint16_t st_d(uint8_t a, uint8_t b)
     if (st_v[b] != st_v[a]) d = (uint16_t)(d + 154);
     return (uint16_t)(d & 0x3FF);
 }
-#define TM_B() do { tm_l = LREL(LY_REG); tm_v = vbl_frames; } while (0)
-#define TM_E(k) do { uint16_t _d = (uint16_t)(LREL(LY_REG) - tm_l); if (tm_v != vbl_frames) _d += 154; _d &= 0x3FF; if (_d > dbg_tm[k]) dbg_tm[k] = _d; } while (0)
+#define TM_B() do { } while (0)       /* profiling hooks (define to measure) */
+#define TM_E(k) do { } while (0)
 
 static uint8_t prev_keys;
 static uint16_t warm_acc;
@@ -180,7 +180,7 @@ void light_beacon(uint8_t i) BANKED
 static uint8_t chunk_of(uint16_t m, uint16_t s, uint8_t *out)
 {
     int16_t d = (int16_t)(m - s);
-    d = (int16_t)((d >> 3) + (VISIT_W / 2));
+    d = (int16_t)((d >> 4) + (VISIT_W / 2));
     if (d < 0 || d >= VISIT_W) return 0;
     *out = (uint8_t)d;
     return 1;
@@ -241,6 +241,7 @@ static uint8_t phase_of(uint16_t t)
     return PH_NIGHT;
 }
 
+static uint8_t stars_shown = 0xFF;
 static const uint16_t phase_start[4] = { T_DAWN, T_DAY, T_DUSK, T_NIGHT };
 
 static void phase_update(uint8_t instant)
@@ -253,9 +254,10 @@ static void phase_update(uint8_t instant)
         pal_phase_from = (instant || old > 3) ? p : old;
         pal_phase_to = p;
         pal_t = 0xFF;
-        band_stars(p == PH_NIGHT || p == PH_DUSK);
         if (p == PH_DAWN && !instant) sfx_play(SFX_DAWN);
     }
+    t = (uint8_t)(p == PH_NIGHT || p == PH_DUSK);
+    if (t != stars_shown && band_stars(t)) stars_shown = t;
     t = into >= PHASE_BLEND ? 16 : (uint8_t)(into >> 6);
     if (instant) t = 16;
     if (t != pal_t) {
@@ -268,12 +270,14 @@ static void phase_update(uint8_t instant)
 /* weather hash (own: the core's hashes are not re-entrant and this runs in the VBL ISR) */
 static uint8_t wx_hash(uint16_t a, uint16_t b)
 {
-    uint16_t x = (uint16_t)(a * 0x2545u ^ b);
+    /* xorshift mixing only: no multiplies (this runs in the VBL ISR) */
+    uint16_t x = (uint16_t)(a ^ 0x5A17u);
     x ^= (uint16_t)(x << 7);
     x ^= (uint16_t)(x >> 9);
+    x ^= b;
     x ^= (uint16_t)(x << 8);
-    x = (uint16_t)(x + b * 0x61u);
     x ^= (uint16_t)(x >> 7);
+    x ^= (uint16_t)(x << 5);
     return (uint8_t)(x ^ (x >> 8));
 }
 
@@ -285,7 +289,7 @@ static void weather_update(void)
     wx_region_x = rx;
     wx_region_y = ry;
     wx_day = day_count;
-    h = wx_hash((uint16_t)(rx ^ (world.seed * 3u)), (uint16_t)(ry + day_count * 0x9E37u));
+    h = wx_hash((uint16_t)(rx ^ world.seed), (uint16_t)(ry ^ (day_count << 6) ^ (day_count << 11)));
     b = biome_here;
     if (h < 150) w = WX_CLEAR;
     else if (h < 195) w = WX_RAIN;
@@ -293,11 +297,9 @@ static void weather_update(void)
     else w = WX_STORM;
     if (b == B_TUNDRA && (w == WX_RAIN || w == WX_STORM)) w = WX_SNOW;
     if (b == B_DESERT && w != WX_CLEAR) w = (uint8_t)(h & 1 ? WX_CLEAR : WX_FOG);
-    if (day_count == 0 && world_dist(pl_mx, pl_my, world.start.x, world.start.y) < 40) w = WX_CLEAR;
-    if (w != weather) {
-        weather = w;
-        fx_weather_roll();
-    }
+    if (day_count == 0 && (uint16_t)(pl_mx - world.start.x + 40) < 80 && (uint16_t)(pl_my - world.start.y + 40) < 80)
+        w = WX_CLEAR;
+    weather = w;          /* fx re-rolls the drops itself when the weather changes */
 }
 
 static void ambient_update(void)
@@ -310,10 +312,26 @@ static void ambient_update(void)
     }
 }
 
+/* a lit fire or beacon within Chebyshev radius r of the wanderer? Warmth sources only ever
+   come from mods (lighting), so this walks the (short) mods table, not the land */
+uint8_t warm_within(uint8_t r) BANKED
+{
+    uint8_t i, n = world_mod_count, m, r2 = (uint8_t)(r << 1);
+    const wmod_t *p = world_mods;
+    for (i = 0; i < n; i++, p++) {
+        m = p->mt;
+        if (m != MT_FIRE_LIT && m != MT_BEACON_LIT) continue;
+        if ((uint16_t)(p->x - pl_mx + r) > r2) continue;
+        if ((uint16_t)(p->y - pl_my + r) > r2) continue;
+        return 1;
+    }
+    return 0;
+}
+
 static uint16_t warm_mx = 0xFFFF, warm_my;
 static void scan_warm(void)
 {
-    near_warm = land_scan_flag(MTF_WARM, 3);
+    near_warm = warm_within(3);
     warm_mx = pl_mx;
     warm_my = pl_my;
 }
@@ -336,7 +354,7 @@ static void warmth_tick(uint8_t tf)
         return;
     }
     if (phase == PH_NIGHT) {
-        rate = 5;
+        rate = 7;
         if (biome_here == B_TUNDRA || biome_here == B_DESERT) rate = 10;
         m = land_rel(0, 0);
         if (mt_flags[m] & MTF_COLD) rate += 5;
@@ -358,14 +376,15 @@ static void warmth_tick(uint8_t tf)
 
 static void time_tick(void)
 {
-    uint8_t tf = (uint8_t)(pl_state == PL_SIT ? 8 : 1);
+    /* sitting fast-forwards time only within reach of a fire: in the open it is just a rest */
+    uint8_t tf = (uint8_t)(pl_state == PL_SIT && near_warm ? 8 : 1);
     if (pl_state == PL_SLEEP) tf = 0;
     tod = (uint16_t)(tod + tf);
     if (tod >= DAY_FRAMES) { tod -= DAY_FRAMES; day_count++; }
     /* one heavy job per frame, on its own slot of the frame counter (the band refreshes a
        bearing on slot 1) */
     tick8 = vbl_frames;
-    switch (tick8 & 7) {
+    if (!FRAME_LATE()) switch (tick8 & 7) {
     case 0: TM_B(); phase_update(0); TM_E(0); break;
     case 2: case 6: TM_B(); scan_warm_maybe(); TM_E(1); break;
     case 3: if (tick8 & 8) { TM_B(); visit_mark(); TM_E(2); } break;
@@ -428,6 +447,7 @@ void world_enter(uint8_t fresh) BANKED
     camera_update();
     land_refill(cam_mx, cam_my);
     phase = 0xFF;
+    stars_shown = 0xFF;
     pal_band_bright = 0;
     pal_flash = 0;
     phase_update(1);
@@ -470,7 +490,7 @@ static void whiteout(void)
     pl_state = PL_SLEEP;
     tod = 600;
     day_count++;
-    warmth = WARMTH_MAX;
+    warmth = WARMTH_WAKE;
     world_enter(0);
     ambient_mode(AMB_WAKE);
     wake_t = 0;
@@ -528,7 +548,8 @@ static void ending(void)
 /* ---------------------------------------------------------------- the world loop */
 enum { REQ_NONE = 0, REQ_MAP, REQ_WHITEOUT, REQ_ENDING, REQ_TELEPORT, REQ_REFILL };
 volatile uint8_t world_req;
-uint16_t dbg_stalls;
+uint16_t dbg_stalls, dbg_late;
+volatile uint8_t dbg_stage;
 uint8_t dbg_hook_ly;          /* frames the wanderer waited for the streamer */
 
 static void request(uint8_t r)
@@ -542,8 +563,12 @@ static void request(uint8_t r)
 void world_frame(void) BANKED
 {
     int16_t rx, ry;
+    uint8_t ly = LY_REG;
+    /* a late start (the VBlank was held off) could run into the next frame and be seen half
+       done: skip this frame instead */
+    if (ly >= 100 && ly < 144) { if (dbg_count_on) { dbg_frame_drops++; dbg_late++; } return; }
     dbg_count_on = 1;
-    STAMP(0);
+    dbg_stage = 1;
     input();
     dbg_world_frames++;
     if (dbg_teleport == 1) { dbg_teleport = 2; request(REQ_TELEPORT); return; }
@@ -568,21 +593,20 @@ void world_frame(void) BANKED
     if (rx < 0 || rx > 88 || ry < 0 || ry > 128) { request(REQ_REFILL); return; }
     if (rx < 10 || rx > 62 || ry < 10 || ry > 102) dbg_stalls++;
     else player_update();
+    dbg_stage = 2;
     if (ending_req) { request(REQ_ENDING); return; }
     camera_update();
     time_tick();
-    STAMP(2);
-    if (watch_on || !(vbl_frames & 15)) watchers_update();   /* idle: roll every 16 frames */
+    dbg_stage = 3;
+    if (watch_on || (vbl_frames & 15) == 4) watchers_update();   /* idle: roll every 16 frames (slot 4) */
     band_update();
-    STAMP(3);
+    dbg_stage = 4;
     player_draw();
-    STAMP(4);
+    dbg_stage = 5;
     fx_update();
-    STAMP(5);
+    dbg_stage = 6;
     frame_commit();
-    STAMP(6);
-    { uint8_t k; uint16_t d;
-      for (k = 0; k < 6; k++) { d = st_d(k, (uint8_t)(k + 1)); if (d > dbg_dmax[k]) dbg_dmax[k] = d; dbg_tsum[k] += d; } }
+    dbg_stage = 7;
     if (!warmth) request(REQ_WHITEOUT);
     { uint8_t l = LY_REG; l = (uint8_t)(l >= 144 ? l - 144 : l + 10); if (l > dbg_hook_ly) dbg_hook_ly = l; }
 }
@@ -598,7 +622,7 @@ static void world_run(void)
             if (eq_apply()) continue;
             if (save_req) { save_req = 0; save_write(); continue; }
             __critical { cx = cam_mx; cy = cam_my; }
-            r = land_update(cx, cy, 1);
+            r = land_update(cx, cy, 3);
             if (r == 2) {
                 static const int8_t fdx[8] = { 0, 1, 1, 1, 0, -1, -1, -1 };
                 static const int8_t fdy[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
@@ -685,12 +709,23 @@ static void gen_tally(uint8_t slot, uint8_t n)
     gen_glyph(slot, mk);
 }
 
+static uint8_t title_hold;       /* frames SELECT has been held (a new world at TITLE_HOLD) */
+#define TITLE_HOLD 120
+
 static void title_sprites(uint8_t have_save, uint16_t seed, uint8_t t)
 {
-    uint8_t i, n, x, pal_ui = is_cgb ? OPAL_UI : 0;
-    uint8_t flick = (uint8_t)((t >> 3) & 1);
-    /* the flame */
-    spr_set(0, 80 - 4 + 8, (uint8_t)(16 + 104 - flick), SPR_PIP_FULL, (uint8_t)(is_cgb ? OPAL_EMBER : S_PALETTE));
+    uint8_t i, n, x, pal_ui = is_cgb ? OPAL_UI : 0, h = title_hold;
+    uint8_t flick = (uint8_t)((t >> 3) & 1), show = 1, tile = SPR_PIP_FULL, y = 16 + 104;
+    /* the flame; while SELECT is held it gutters: faster flicker, sinking, then gaps, then out */
+    if (h) {
+        flick = (uint8_t)((t >> (h > 60 ? 1 : 2)) & 1);
+        y = (uint8_t)(y + (h >> 5));
+        if (h > 40 && ((t ^ (t >> 2)) & 3) < (uint8_t)(h >> 5)) show = 0;
+        if (h > 90) tile = SPR_PIP_EMPTY;
+        if (h >= TITLE_HOLD - 6) show = 0;
+    }
+    if (show) spr_set(0, 80 - 4 + 8, (uint8_t)(y - flick), tile, (uint8_t)(is_cgb ? OPAL_EMBER : S_PALETTE));
+    else spr_hide(0);
     /* tally marks, groups of five */
     n = worlds_done > 40 ? 40 : worlds_done;
     x = 80 + 8 + 8;
@@ -720,6 +755,7 @@ static void title_sigil(uint16_t seed)
 /* returns 1 = continue, 2 = new world */
 static uint8_t title(void)
 {
+    uint8_t choice = 1;
     uint8_t t = 0, have = save_exists();
     uint16_t seed = 0;
     game_state = GS_BOOT;
@@ -750,18 +786,26 @@ static uint8_t title(void)
         frame_sync();
         input();
         t++;
+        if (have) {
+            /* a saved world: A continues it; replacing it takes a deliberate, held SELECT */
+            if (keys & J_SELECT) { if (title_hold < 255) title_hold++; }
+            else title_hold = 0;
+        }
         title_sprites(have, seed, t);
         frame_commit();
-        if (pressed & (J_A | J_START | J_SELECT)) { sfx_play(SFX_SELECT); break; }
+        if (have && title_hold >= TITLE_HOLD) { choice = 2; break; }
+        if (have && (pressed & (J_A | J_START))) { choice = 1; break; }
+        if (!have && (pressed & (J_A | J_START | J_SELECT))) { choice = 2; break; }
     }
+    sfx_play(SFX_SELECT);
+    title_hold = 0;
     /* fade the title out */
     while (pal_fade < 16) {
         pal_fade++;
         pal_title();
         wait_frames(2);
     }
-    if (pressed & J_SELECT) return 2;
-    return have ? 1 : 2;
+    return choice;
 }
 
 void game_main(void) BANKED

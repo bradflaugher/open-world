@@ -31,6 +31,7 @@ static uint8_t srand8(void)
 static const int8_t sway[16] = { 0, 1, 1, 2, 2, 2, 1, 1, 0, -1, -1, -2, -2, -2, -1, -1 };
 
 static uint8_t wx_rolled = 0xFF;
+static int8_t wx_skip_dx, wx_skip_dy;
 static uint8_t glow_last = 0xFF, glow_last_x, wx_hidden, hud_key[6];
 
 static void glow_draw(void)
@@ -59,8 +60,8 @@ void fx_weather_roll(void) BANKED
 {
     uint8_t i;
     for (i = 0; i < NUM_WX; i++) {
-        wx_x[i] = (uint8_t)(srand8() % 168);
-        wx_depth[i] = (uint8_t)(i % 3);
+        { uint8_t r = srand8(); if (r >= 168) r = (uint8_t)(r - 88); wx_x[i] = r; }
+        wx_depth[i] = (uint8_t)(i & 3 ? (i & 1) + 1 : 0);
     }
 }
 
@@ -79,9 +80,15 @@ static void weather_draw(void)
         return;
     }
     wx_hidden = 0;
+    /* DMG: the drops move every other frame, twice as far (half the cost) */
+    if (!is_cgb) {
+        if (vbl_frames & 1) { wx_skip_dx += dcx; wx_skip_dy += dcy; return; }
+        dcx = (int8_t)(dcx + wx_skip_dx); dcy = (int8_t)(dcy + wx_skip_dy);
+        wx_skip_dx = wx_skip_dy = 0;
+    }
     if (wx_rolled != weather) { wx_rolled = weather; fx_weather_roll(); }
-    if (weather == WX_SNOW) { tile = SPR_SNOW; fall = (uint8_t)((vbl_frames & 1) ? 1 : 0); }
-    else { tile = SPR_RAIN; fall = weather == WX_STORM ? 5 : 4; }
+    if (weather == WX_SNOW) { tile = SPR_SNOW; fall = (uint8_t)(!is_cgb || (vbl_frames & 1) ? 1 : 0); }
+    else { tile = SPR_RAIN; fall = weather == WX_STORM ? 5 : 4; if (!is_cgb) fall <<= 1; }
     pal = is_cgb ? OPAL_WEATHER : S_PALETTE;
     /* the world moves under the weather (parallax: nearer layers move more) */
     wx_y = (uint8_t)(wx_y + fall - dcy);
@@ -90,7 +97,7 @@ static void weather_draw(void)
     for (i = 0; i < NUM_WX; i++) {
         uint8_t d = wx_depth[i];
         int8_t mv = (int8_t)(-(dcx) - (d ? (dcx >> (3 - d)) : 0));
-        if (weather != WX_SNOW) mv = (int8_t)(mv - 1 - (d >> 1));   /* wind */
+        if (weather != WX_SNOW) mv = (int8_t)(mv - ((1 + (d >> 1)) << (is_cgb ? 0 : 1)));   /* wind */
         wx_x[i] = (uint8_t)(wx_x[i] + mv);
         if (wx_x[i] >= 168) wx_x[i] = (uint8_t)(wx_x[i] + (wx_x[i] >= 212 ? 168 : -168));
         top = (uint8_t)(wx_y + i * 9);
@@ -161,8 +168,9 @@ void fx_redraw(void) BANKED
 
 void fx_update(void) BANKED
 {
-    pal_tick();
+    if (!FRAME_LATE()) pal_tick();
     glow_draw();
+    if (FRAME_LATE()) return;       /* the rest can wait a frame */
     weather_draw();
     storm_tick();
     /* fog rolls in and out slowly */

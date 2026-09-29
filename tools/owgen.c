@@ -5,7 +5,7 @@
  *   owgen png SEED FILE [SCALE [W H [CX CY]]]  PPM image (default 512x512 metatiles, scale 1)
  *   owgen mt SEED X Y               world_mt value (decimal)
  *   owgen dump SEED X0 Y0 W H       world_mt of a W x H region, row-major, as hex (one row per line)
- *   owgen layoutraw SEED            start, beacons, shrines, heart as 18 decimal numbers
+ *   owgen layoutraw SEED            start, 3 beacons, 3 shrines, heart: 16 numbers (x y pairs)
  *   owgen legend                    character legend
  */
 #include <stdio.h>

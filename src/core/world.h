@@ -141,12 +141,12 @@ uint16_t world_dist(uint16_t ax, uint16_t ay, uint16_t bx, uint16_t by) WBANKED;
 typedef struct {
     uint16_t a_maj, a_min;                /* start point, (major, minor) axis */
     uint16_t bx, by, bw, bh;              /* bounding box: x in [bx, bx+bw], y in [by, by+bh] */
-    uint8_t dmin;                         /* |minor delta| */
+    uint16_t dmin, dmaj;                  /* |minor delta|, |major delta| */
+    uint16_t qi;                          /* major advance per minor step: integer part ... */
+    uint8_t qf;                           /* ... and 1/256ths */
     uint8_t flags;                        /* W_R_* */
     uint8_t n;                            /* number of minor steps */
     uint8_t shift;                        /* minor step = 1 << shift metatiles */
-    uint8_t dmaj;                         /* |major delta| */
-    uint16_t q;                           /* major advance per minor step, 8.8 fixed point */
 } w_road_t;
 #define W_R_YMAJOR 1                      /* major axis is y */
 #define W_R_MAJNEG 2                      /* major coordinate decreases along the road */
@@ -155,7 +155,7 @@ extern w_road_t w_roads[W_NUM_ROADS];
 extern uint8_t  w_s0, w_s1, w_salt;       /* seed bytes mixed into every hash; salt of the next */
 extern uint8_t  w_ready;                  /* set pieces valid */
 extern uint8_t  w_start_ground;
-extern uint16_t w_spx0, w_spy0;           /* coarse filter origin (128-metatile cells) */
+extern uint16_t w_spx0, w_spy0;           /* coarse filter origin (256-metatile cells) */
 extern uint8_t  w_sp_mask[64];            /* 8 x 8 cells: which set pieces touch it (W_SPM_*) */
 #define W_SPM_ROAD0  0x01                 /* bits 0-3: causeways 0-3 */
 #define W_SPM_BEACON0 0x10                /* bits 4-6: beacons 0-2 */
@@ -195,8 +195,11 @@ uint8_t w_poi_mt(uint8_t ax, uint8_t ay, uint8_t d) WBANKED; /* POI tile at |off
 #define W_SP_NONE  0xFF                   /* w_piece: no set piece here */
 #define W_SP_CLEAR 0xFE                   /* w_piece: start clearing (base unless solid) */
 uint8_t w_piece(uint16_t mx, uint16_t my, uint8_t mask) WBANKED;
-uint8_t w_block_mask(uint16_t kx, uint16_t ky, uint8_t mask) WBANKED; /* pieces touching a 4x4 block */
-uint16_t w_block_roads(uint16_t kx, uint16_t ky, uint8_t mask) WBANKED; /* its causeway cells */
+void    w_binfo(uint16_t kx, uint16_t ky) WBANKED;  /* a 4x4 block's data into w_binfo_* */
+extern uint8_t w_binfo_m, w_binfo_n, w_binfo_r[4]; /* set pieces, POI reach, road/fire cell masks */
+void    w_poi_roll(uint16_t kx, uint16_t ky);   /* make 16x16 cell (m & ~15) the current POI */
+void    w_poi_gen(uint16_t kx, uint16_t ky) WBANKED; /* ... rolling it when not cached */
+void    w_poi_check(uint8_t lx, uint8_t ly, const uint8_t *c) WBANKED; /* validate it (w_pq_ok) */
 uint8_t w_ruin(uint16_t mx, uint16_t my, uint8_t d, uint8_t ground) WBANKED;
 uint8_t w_old_cairn(uint16_t mx, uint16_t my) WBANKED;
 #define W_POI_NONE 0
@@ -222,7 +225,7 @@ extern uint32_t w_ops[W_OP_COUNT];
 
 #ifndef __SDCC
 /* ---- host-only (tests / owgen): reachability over a window of metatiles (src/core/wreach.c) ---- */
-#define WR_HALF 320                          /* window is (2*WR_HALF)^2 metatiles around the centre */
+#define WR_HALF 640                          /* window is (2*WR_HALF)^2 metatiles around the centre */
 #define WR_LANTERN (1u << IT_LANTERN)
 #define WR_STONES  (1u << IT_STONES)
 #define WR_CLOAK   (1u << IT_CLOAK)

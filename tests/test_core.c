@@ -173,12 +173,12 @@ static void test_set_pieces(void)
             uint16_t d = world_dist(world.start.x, world.start.y, world.beacon[i].x, world.beacon[i].y);
             uint8_t br = world_bearing(world.start.x, world.start.y, world.beacon[i].x, world.beacon[i].y);
             int8_t db = (int8_t)(uint8_t)(br - (uint8_t)(i * 85));
-            CHECK_SEED(d >= 85 && d <= 175, seed);
+            CHECK_SEED(d >= 240 && d <= 430, seed);   /* octagonal distance: up to 8% long */
             CHECK_SEED(db >= -14 && db <= 14, seed);
         }
         {
             uint16_t d = world_dist(world.start.x, world.start.y, world.heart.x, world.heart.y);
-            CHECK_SEED(d >= 190 && d <= 270, seed);
+            CHECK_SEED(d >= 440 && d <= 650, seed);
         }
         /* start: a cold fire, walkable spawn and a clear radius-3 area */
         CHECK_SEED(world_mt(world.start.x, world.start.y) == MT_FIRE_COLD, seed);
@@ -355,11 +355,14 @@ static void test_pois(void)
                 uint16_t mx = (uint16_t)(world.start.x + x), my = (uint16_t)(world.start.y + y);
                 uint8_t mt = world_mt(mx, my);
                 if (mt == MT_FIRE_COLD) {
-                    int dx, dy;
+                    int dx, dy, open = 0;
                     fires++;
+                    /* POI fires sit in a clearing; road-side fires at least beside the road */
                     for (dy = -1; dy <= 1; dy++)
                         for (dx = -1; dx <= 1; dx++)
-                            if ((dx || dy) && (mt_flags[world_mt((uint16_t)(mx + dx), (uint16_t)(my + dy))] & MTF_SOLID)) bad++;
+                            if ((dx || dy) && !(dx && dy) &&
+                                !(mt_flags[world_mt((uint16_t)(mx + dx), (uint16_t)(my + dy))] & MTF_SOLID)) open++;
+                    if (!open) bad++;
                 }
                 if (mt == MT_TABLE) tables++;
                 if (mt == MT_WELL) wells++;
@@ -374,6 +377,38 @@ static void test_pois(void)
     CHECK(tables > 0 && wells > 0 && monos > 0);
 }
 
+/* cold fires along the routes: walking from the start to each beacon and to the Heart, the
+ * longest stretch without a fire within 8 metatiles of the straight line */
+static void test_route_fires(void)
+{
+    int s, r, worst = 0;
+    long sum = 0, n = 0;
+    for (s = 0; s < 24; s++) {
+        world_init((uint16_t)(s * 4099 + 11));
+        for (r = 0; r < NUM_BEACONS + 1; r++) {
+            wpos_t tgt = r < NUM_BEACONS ? world.beacon[r] : world.heart;
+            int dx = (int16_t)(tgt.x - world.start.x), dy = (int16_t)(tgt.y - world.start.y);
+            int len = (int)world_dist(world.start.x, world.start.y, tgt.x, tgt.y), i, last = 0, gap = 0;
+            for (i = 0; i <= len; i += 2) {
+                int cx = world.start.x + dx * i / len, cy = world.start.y + dy * i / len, ox, oy, found = 0;
+                for (oy = -8; oy <= 8 && !found; oy++)
+                    for (ox = -8; ox <= 8; ox++) {
+                        uint8_t mt = world_mt((uint16_t)(cx + ox), (uint16_t)(cy + oy));
+                        if (mt == MT_FIRE_COLD) { found = 1; break; }
+                    }
+                if (found) { if (i - last > gap) gap = i - last; last = i; }
+            }
+            if (len - last > gap) gap = len - last;
+            if (gap > worst) { worst = gap; if (gap > 140) printf("  (seed %u route %d: %d)\n", world.seed, r, gap); }
+            sum += gap;
+            n++;
+        }
+    }
+    printf("route fires: longest stretch without a fire nearby: mean %ld, worst %d metatiles\n", sum / n, worst);
+    CHECK(sum / n <= 70);
+    CHECK(worst <= 140);
+}
+
 int main(void)
 {
     test_source_guard();
@@ -382,6 +417,7 @@ int main(void)
     test_mods();
     test_old_cairns();
     test_pois();
+    test_route_fires();
     test_biomes();
     test_scale();
     test_set_pieces();

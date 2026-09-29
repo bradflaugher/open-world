@@ -18,7 +18,9 @@
 uint8_t is_cgb;
 volatile uint8_t vbl_frames;
 uint16_t dbg_frame_drops;
-uint16_t dbg_vbl_count;
+uint16_t dbg_vbl_count, dbg_nest;
+uint8_t dbg_nest_at[8];
+extern volatile uint8_t dbg_stage;
 uint8_t dbg_count_on;
 uint8_t dbg_vbl_ly[2];
 
@@ -31,7 +33,8 @@ static volatile uint8_t frame_ready;
 static uint8_t last_vbl;
 
 /* queues (drained by isr.s) */
-uint8_t bq[64 * 8];               /* addr lo, addr hi, mt, 4 tiles, pad */
+uint8_t bq[32 * 8];               /* addr lo, addr hi, mt, 4 tiles, pad */
+uint8_t scratch[160];              /* shared by main-loop screens: land refill rows, map lines */
 volatile uint8_t bq_head, bq_tail;
 uint8_t bq_budget = 8;
 uint8_t vq[32 * 4];
@@ -137,7 +140,7 @@ static void vbl_isr(void)
     /* the game frame runs here, so a slow world_mt in the main loop never costs a frame */
     if (hook_on) {
         if (hook_busy) {
-            if (dbg_count_on) dbg_frame_drops++;
+            if (dbg_count_on) { dbg_frame_drops++; dbg_nest++; dbg_nest_at[dbg_stage & 7]++; }
         } else {
             hook_busy = 1;
             world_frame();
@@ -200,7 +203,7 @@ void bq_push(uint8_t col, uint8_t row, uint8_t mt, const uint8_t *t)
     for (;;) {
         __critical {
             h = bq_head;
-            if ((uint8_t)((h + 1) & 63) != bq_tail) {
+            if ((uint8_t)((h + 1) & 31) != bq_tail) {
                 p = &bq[(uint16_t)h << 3];
                 p[0] = (uint8_t)a;
                 p[1] = (uint8_t)(a >> 8);
@@ -209,7 +212,7 @@ void bq_push(uint8_t col, uint8_t row, uint8_t mt, const uint8_t *t)
                 p[4] = t[1];
                 p[5] = t[2];
                 p[6] = t[3];
-                bq_head = (uint8_t)((h + 1) & 63);
+                bq_head = (uint8_t)((h + 1) & 31);
                 h = 0xFF;
             }
         }
@@ -221,7 +224,7 @@ void bq_push(uint8_t col, uint8_t row, uint8_t mt, const uint8_t *t)
 
 uint8_t bq_pending(void)
 {
-    return (uint8_t)((bq_head - bq_tail) & 63);
+    return (uint8_t)((bq_head - bq_tail) & 31);
 }
 
 void vq_push(uint16_t addr, uint8_t tile, uint8_t attr)

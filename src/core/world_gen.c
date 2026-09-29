@@ -120,42 +120,10 @@ static uint16_t mul8(uint8_t a, uint8_t b)
     return (uint16_t)(qsq[s] - qsq[d]);
 }
 
-/* major offset of breakpoint k (0..n+1): round(k * dmaj / (n + 1)) via the 8.8 step q, with two
- * 8x8 multiplies by quarter squares (exact, identical on SDCC and gcc, no multiply call) */
-static uint8_t road_x(const w_road_t *r, uint8_t k)
-{
-    uint16_t a, b;
-    if (k > r->n) return r->dmaj;
-    a = mul8(k, (uint8_t)(r->q >> 8));
-    b = mul8(k, (uint8_t)r->q);
-    b = (uint16_t)(b + 128);
-    return (uint8_t)(a + (b >> 8));
-}
-
-static uint8_t on_road(const w_road_t *r, uint16_t mx, uint16_t my)
-{
-    uint16_t maj, mn, t;
-    uint8_t k, o;
-    if (r->flags & W_R_YMAJOR) { maj = my; mn = mx; } else { maj = mx; mn = my; }
-    t = (r->flags & W_R_MINNEG) ? (uint16_t)(r->a_min - mn) : (uint16_t)(mn - r->a_min);
-    if (t > r->dmin) return 0;
-    maj = (r->flags & W_R_MAJNEG) ? (uint16_t)(r->a_maj - maj) : (uint16_t)(maj - r->a_maj);
-    if (maj > 255) return 0;
-    o = (uint8_t)maj;
-    if ((uint8_t)t == r->dmin) k = r->n;
-    else {
-        k = (uint8_t)((uint8_t)t >> r->shift);
-        if ((uint8_t)t & (uint8_t)((1u << r->shift) - 1)) return o == road_x(r, (uint8_t)(k + 1));
-    }
-    if (o < road_x(r, k)) return 0;
-    return o <= road_x(r, (uint8_t)(k + 1));
-}
-
 /* set piece at one cell, or W_SP_NONE / W_SP_CLEAR */
 static uint8_t piece(uint16_t mx, uint16_t my, uint8_t mask)
 {
     uint8_t i, d2, ux, uy;
-    const w_road_t *r;
     for (i = 0; i < NUM_BEACONS; i++) {
         if (!(mask & (uint8_t)(W_SPM_BEACON0 << i))) continue;
         ux = box_off(mx, world.beacon[i].x, 6);
@@ -187,12 +155,6 @@ static uint8_t piece(uint16_t mx, uint16_t my, uint8_t mask)
         }
         if (mx == world.start.x && my == world.start.y) return MT_FIRE_COLD;
     }
-    for (i = 0; i < W_NUM_ROADS; i++) {
-        if (!(mask & (uint8_t)(W_SPM_ROAD0 << i))) continue;
-        r = &w_roads[i];
-        if ((uint16_t)(mx - r->bx) <= r->bw && (uint16_t)(my - r->by) <= r->bh && on_road(r, mx, my))
-            return world_detail(mx, my) < 24 ? MT_RUIN_FLOOR : MT_ROAD;
-    }
     if (!(mask & W_SPM_OTHER)) return W_SP_NONE;
     ux = box_off(mx, world.start.x, 3);
     uy = box_off(my, world.start.y, 3);
@@ -216,14 +178,15 @@ static uint8_t box_hit(uint16_t kx, uint16_t ky, const wpos_t *c, uint8_t rad)
  * at most two steps of the stair (a step is >= 4), so three breakpoints are enough. */
 static w_road_t rr;   /* the road being tested (a global copy: SDCC handles it far better) */
 
-static uint8_t rr_x(uint8_t k)
+/* major offset of breakpoint k (0..n+1) of road rr: round(k * dmaj / (n + 1)) from the step
+ * (qi + qf / 256), with 8 x 8 multiplies by quarter squares (exact, identical on SDCC and gcc) */
+static uint16_t rr_x(uint8_t k)
 {
     uint16_t a, b;
     if (k > rr.n) return rr.dmaj;
-    a = mul8(k, (uint8_t)(rr.q >> 8));
-    b = mul8(k, (uint8_t)rr.q);
-    b = (uint16_t)(b + 128);
-    return (uint8_t)(a + (b >> 8));
+    a = (uint16_t)(mul8(k, (uint8_t)rr.qi) + (mul8(k, (uint8_t)(rr.qi >> 8)) << 8));
+    b = (uint16_t)(mul8(k, rr.qf) + 128);
+    return (uint16_t)(a + (b >> 8));
 }
 
 /* bits lo..hi of a 4-bit row (lo, hi clipped to 0..3; empty if lo > hi) */
@@ -241,45 +204,85 @@ static const uint16_t spread4[16] = {
     0x1000, 0x1001, 0x1010, 0x1011, 0x1100, 0x1101, 0x1110, 0x1111
 };
 
-uint16_t w_block_roads(uint16_t kx, uint16_t ky, uint8_t mask) WBANKED
+/* the range [ra, rb] of major offsets of the road cells in the row of parameter t (0..dmin);
+ * k0 and x0..x2 are the breakpoints k0..k0+2 (the block's rows span at most two steps) */
+static uint16_t ra, rb, rx0, rx1, rx2;
+static uint8_t rk0, rsm;
+static void rr_row(uint16_t t)
 {
-    uint16_t bits = 0, maj0, mn0;
-    uint8_t i, a, b, j, f, k0, x0, x1, x2, t0, sm, row;
-    int16_t ts, o0, t;
+    uint8_t f;
+    if (t == rr.dmin) { ra = rr_x(rr.n); rb = rr.dmaj; return; }
+    f = (uint8_t)(t >> rr.shift);
+    if (f == rk0) { rb = rx1; ra = ((uint8_t)t & rsm) ? rx1 : rx0; }
+    else if (f == (uint8_t)(rk0 + 1)) { rb = rx2; ra = ((uint8_t)t & rsm) ? rx2 : rx1; }
+    else { rb = rr_x((uint8_t)(f + 1)); ra = ((uint8_t)t & rsm) ? rb : rr_x(f); }
+}
+
+static uint16_t road_fires;
+
+/* Causeway cells of the 4x4 block at (kx, ky): bit (fy << 2) | fx. Also sets road_fires:
+ * cold fires beside the causeway, one row off a run, every 64 major steps (64-90 metatiles
+ * along the road; with the ordinary fires nearby there is one every 40-60 metatiles). */
+static uint16_t block_roads(uint16_t kx, uint16_t ky, uint8_t mask)
+{
+    uint16_t bits = 0, fires = 0, maj0, mn0, o;
+    uint8_t i, j, f, row, frow;
+    int16_t ts, o0, t, lo, hi;
     for (i = 0; i < W_NUM_ROADS; i++) {
         if (!(mask & (uint8_t)(W_SPM_ROAD0 << i))) continue;
         memcpy(&rr, &w_roads[i], sizeof rr);
         if (rr.flags & W_R_YMAJOR) { maj0 = ky; mn0 = kx; } else { maj0 = kx; mn0 = ky; }
         /* road parameter t of the block's first minor row, major offset of its first cell */
         ts = (rr.flags & W_R_MINNEG) ? (int16_t)(rr.a_min - mn0) : (int16_t)(mn0 - rr.a_min);
-        if (ts < -3 || ts > (int16_t)rr.dmin + 3) continue;
+        if (ts < -4 || ts > (int16_t)rr.dmin + 4) continue;
         o0 = (rr.flags & W_R_MAJNEG) ? (int16_t)(rr.a_maj - maj0) : (int16_t)(maj0 - rr.a_maj);
         if (o0 < -3 || o0 > (int16_t)rr.dmaj + 3) continue;
-        t0 = (uint8_t)((rr.flags & W_R_MINNEG) ? (ts < 3 ? 0 : ts - 3) : (ts < 0 ? 0 : ts));
-        k0 = (uint8_t)(t0 >> rr.shift);
-        x0 = rr_x(k0);
-        x1 = rr_x((uint8_t)(k0 + 1));
-        x2 = rr_x((uint8_t)(k0 + 2));
-        sm = (uint8_t)((1u << rr.shift) - 1);
+        t = (rr.flags & W_R_MINNEG) ? (int16_t)(ts - 4) : (int16_t)(ts - 1);   /* smallest t used */
+        if (t < 0) t = 0;
+        rk0 = (uint8_t)((uint16_t)t >> rr.shift);
+        rx0 = rr_x(rk0);
+        rx2 = rr_x((uint8_t)(rk0 + 2));
+        /* the block's rows only hold road cells with major offsets in [rx0, rx2] (up to dmaj if
+         * they reach the last row) */
+        lo = (int16_t)rx0;
+        hi = ((rr.flags & W_R_MINNEG) ? ts : (int16_t)(ts + 3)) >= (int16_t)rr.dmin ? (int16_t)rr.dmaj : (int16_t)rx2;
+        if (rr.flags & W_R_MAJNEG) { if (o0 < lo || (int16_t)(o0 - 3) > hi) continue; }
+        else if ((int16_t)(o0 + 3) < lo || o0 > hi) continue;
+        rx1 = rr_x((uint8_t)(rk0 + 1));
+        rsm = (uint8_t)((1u << rr.shift) - 1);
         for (j = 0; j < 4; j++) {          /* the 4 minor rows of the block */
             t = (rr.flags & W_R_MINNEG) ? (int16_t)(ts - j) : (int16_t)(ts + j);
-            if (t < 0 || t > (int16_t)rr.dmin) continue;
-            f = (uint8_t)t;
-            if (f == rr.dmin) { a = rr_x(rr.n); b = rr.dmaj; }
-            else if ((uint8_t)(f >> rr.shift) == k0) { b = x1; a = (f & sm) ? x1 : x0; }
-            else { b = x2; a = (f & sm) ? x2 : x1; }
-            /* cells f of the row with offset o0 +- f in [a, b] */
-            if (rr.flags & W_R_MAJNEG) row = span4((int16_t)(o0 - b), (int16_t)(o0 - a));
-            else row = span4((int16_t)(a - o0), (int16_t)(b - o0));
-            if (!row) continue;
-            if (rr.flags & W_R_YMAJOR) bits |= (uint16_t)(spread4[row] << j);   /* a column */
-            else bits |= (uint16_t)((uint16_t)row << (j << 2));
+            row = frow = 0;
+            if (t >= 0 && t <= (int16_t)rr.dmin) {
+                rr_row((uint16_t)t);
+                if (rr.flags & W_R_MAJNEG) { lo = (int16_t)(o0 - (int16_t)rb); hi = (int16_t)(o0 - (int16_t)ra); }
+                else { lo = (int16_t)((int16_t)ra - o0); hi = (int16_t)((int16_t)rb - o0); }
+                row = span4(lo, hi);
+            }
+            /* a fire one row after a run row (t - 1 is a run: its first row or not a leg) */
+            t--;
+            if (t >= 0 && t <= (int16_t)rr.dmin && (!((uint8_t)t & rsm) || t == (int16_t)rr.dmin)) {
+                rr_row((uint16_t)t);
+                for (f = 0; f < 4; f++) {
+                    o = (rr.flags & W_R_MAJNEG) ? (uint16_t)(o0 - f) : (uint16_t)(o0 + f);
+                    if (((uint8_t)o & 63) == 32 && (int16_t)o >= (int16_t)ra && (int16_t)o <= (int16_t)rb)
+                        frow |= (uint8_t)(1u << f);
+                }
+            }
+            if (rr.flags & W_R_YMAJOR) {   /* major = y: the row is a column of the block */
+                bits |= (uint16_t)(spread4[row] << j);
+                fires |= (uint16_t)(spread4[frow] << j);
+            } else {
+                bits |= (uint16_t)((uint16_t)row << (j << 2));
+                fires |= (uint16_t)((uint16_t)frow << (j << 2));
+            }
         }
     }
+    road_fires = (uint16_t)(fires & ~bits);
     return bits;
 }
 
-uint8_t w_block_mask(uint16_t kx, uint16_t ky, uint8_t mask) WBANKED
+static uint8_t block_mask(uint16_t kx, uint16_t ky, uint8_t mask)
 {
     uint8_t i, m = 0;
     for (i = 0; i < NUM_BEACONS; i++)
@@ -287,7 +290,98 @@ uint8_t w_block_mask(uint16_t kx, uint16_t ky, uint8_t mask) WBANKED
             m |= (uint8_t)(W_SPM_BEACON0 << i);
     if ((mask & W_SPM_OTHER) && (box_hit(kx, ky, &world.heart, 4) || box_hit(kx, ky, &world.start, 3)))
         m |= W_SPM_OTHER;
-    return (uint8_t)(m | (mask & 0x0F));   /* causeways: resolved by w_block_roads */
+    return (uint8_t)(m | (mask & 0x0F));   /* causeways: resolved by block_roads */
+}
+
+/* Per-block data for the hot file's block cache (on a miss): the set pieces touching the 4x4
+ * block (w_binfo_m, W_SPM_* without the causeway bits), its causeway and road-side fire cells
+ * (w_binfo_r: two 16-bit cell masks) and whether its 16x16 cell's POI can reach into it. */
+static uint16_t spk_x = 0xFFFF, spk_y = 0xFFFF;   /* last set-piece filter cell (m & ~255) */
+static uint8_t spk_on;                            /* ... its W_SPM_* mask */
+void w_binfo(uint16_t kx, uint16_t ky) WBANKED
+{
+    uint8_t m = 0, bx, by;
+    if (w_ready) {
+        if ((kx & 0xFF00) != spk_x || (ky & 0xFF00) != spk_y) {
+            uint16_t cx = (uint16_t)(kx - w_spx0), cy = (uint16_t)(ky - w_spy0);
+            spk_x = kx & 0xFF00;
+            spk_y = ky & 0xFF00;
+            spk_on = 0;
+            if (cx < 2048 && cy < 2048)
+                spk_on = w_sp_mask[(uint8_t)(((uint8_t)(cy >> 8) << 3) | (uint8_t)(cx >> 8))];
+        }
+        if (spk_on) m = block_mask(kx, ky, spk_on);
+    }
+    w_binfo_r[0] = w_binfo_r[1] = w_binfo_r[2] = w_binfo_r[3] = 0;
+    if (m & 0x0F) {   /* causeways: resolved per block into cell masks */
+        uint16_t rb = block_roads(kx, ky, m);
+        w_binfo_r[0] = (uint8_t)rb;
+        w_binfo_r[1] = (uint8_t)(rb >> 8);
+        w_binfo_r[2] = (uint8_t)road_fires;
+        w_binfo_r[3] = (uint8_t)(road_fires >> 8);
+        m &= 0xF0;
+    }
+    w_binfo_m = m;
+    /* the POI of the block's 16x16 cell */
+    if ((kx & 0xFFF0) != w_pq_x || (ky & 0xFFF0) != w_pq_y) w_poi_roll(kx & 0xFFF0, ky & 0xFFF0);
+    m = 0;
+    bx = (uint8_t)kx & 15;
+    by = (uint8_t)ky & 15;
+    if (w_pq_type == W_POI_ROAD)
+        m = (uint8_t)(w_pq_px - bx) < 4 || (uint8_t)(w_pq_py - by) < 4;
+    else if (w_pq_type != W_POI_NONE)
+        m = (uint8_t)(w_pq_px + 2 - bx) < 8 && (uint8_t)(w_pq_py + 2 - by) < 8;
+    w_binfo_n = m;
+}
+
+/* Validate the current POI (once per POI cell): a road ending in the sea needs shore at its
+ * centre (a lattice point); any other POI stands on a lattice point, a corner of the block
+ * whose corners are c (e0..3 m0..3 s0..3), holding cell (lx, ly) of the 16x16 cell. */
+void w_poi_check(uint8_t lx, uint8_t ly, const uint8_t *c) WBANKED
+{
+    uint8_t i;
+    W_OP(W_OP_POI_CHECK);
+    w_pq_ok = 1;
+    if (w_pq_type == W_POI_ROAD) {
+        w_lattice((uint16_t)((w_pq_x + w_pq_px) >> 2), (uint16_t)((w_pq_y + w_pq_py) >> 2));
+        if (w_classify(w_le, w_lm, w_ls) != B_SHORE) w_pq_type = W_POI_NONE;
+        return;
+    }
+    i = (uint8_t)((lx < w_pq_px ? 1 : 0) | (ly < w_pq_py ? 2 : 0));
+    c += i;
+    i = w_classify(c[0], c[4], c[8]);
+    w_pq_ground = w_biome_ground[i];
+    if (i <= B_SHORE || i == B_ROCK || c[0] < W_T_SHORE + 6) w_pq_type = W_POI_NONE;
+    else if (w_pq_type == W_POI_MONOLITH && i == B_ASH) w_pq_ground = MT_GLASS;
+}
+
+/* the POI roll of a 16x16 cell (key m & ~15), after w_poi_roll found it in neither slot */
+#define SALT_P  0xA3
+#define SALT_P2 0x17
+static const uint8_t poi_pos[4] = { 4, 8, 8, 12 };   /* lattice-aligned, away from the edges */
+void w_poi_gen(uint16_t kx, uint16_t ky) WBANKED
+{
+    uint8_t h, h2;
+    uint16_t cx = kx >> 4, cy = ky >> 4;
+    W_OP(W_OP_POI_ROLL);
+    w_pq_x = kx;
+    w_pq_y = ky;
+    w_pq_ok = 0;
+    w_salt = SALT_P;
+    h = w_hash(cx, cy);
+    w_salt = SALT_P2;
+    h2 = w_hash(cx, cy);
+    w_pq_px = poi_pos[h2 & 3];
+    w_pq_py = poi_pos[(h2 >> 2) & 3];
+    w_pq_axis = (uint8_t)((h2 >> 4) & 1);
+    if (h < 86) h = W_POI_FIRE;            /* ~1 in 3 cells: a cold campfire */
+    else if (h < 100) h = W_POI_MONOLITH;
+    else if (h < 105) h = W_POI_TABLE;     /* a table set for two */
+    else if (h < 110) h = W_POI_WELL;
+    else if (h < 114) h = W_POI_HAND;      /* a giant stone hand */
+    else if (h < 120) h = W_POI_ROAD;      /* a road ending in the sea */
+    else h = W_POI_NONE;
+    w_pq_type = h;
 }
 
 uint8_t w_piece(uint16_t mx, uint16_t my, uint8_t mask) WBANKED
@@ -378,6 +472,7 @@ void w_lattice_reset(void) WBANKED
 {
     oc_x0 = oc_x1 = om_x0 = om_x1 = oe_x0 = oe_x1 = 0xFFFF;
     mp_cx = mp_mx = mp_ex = 0xFFFF;
+    spk_x = spk_y = 0xFFFF;                       /* the set-piece filter cache of w_binfo */
 }
 
 /* inner three rounds of w_hash (shared by all salts) */
@@ -692,16 +787,19 @@ static uint8_t road_build(w_road_t *r, const wpos_t *a, const wpos_t *b)
         if (dx < 0) r->flags |= W_R_MAJNEG;
         if (dy < 0) r->flags |= W_R_MINNEG;
     }
-    if (dmaj > 255) return 0;
-    r->dmin = (uint8_t)dmn;
+    r->dmin = dmn;
     for (sh = 2;; sh++) {
         n = (uint8_t)((dmn + (1u << sh) - 1) >> sh);
-        if (n <= 40) break;
+        if (((dmn + (1u << sh) - 1) >> sh) <= 200) break;
     }
     r->shift = sh;
     r->n = n;
-    r->dmaj = (uint8_t)dmaj;
-    r->q = (uint16_t)(((uint16_t)dmaj << 8) / (n + 1u));   /* major advance per step, 8.8 */
+    r->dmaj = dmaj;
+    {
+        uint32_t q = ((uint32_t)dmaj << 8) / (n + 1u);   /* major advance per step, 8.8 */
+        r->qi = (uint16_t)(q >> 8);
+        r->qf = (uint8_t)q;
+    }
     /* bounding box */
     if (a->x < b->x) { r->bx = a->x; r->bw = (uint16_t)(b->x - a->x); }
     else { r->bx = b->x; r->bw = (uint16_t)(a->x - b->x); }
@@ -714,17 +812,18 @@ static uint8_t road_build(w_road_t *r, const wpos_t *a, const wpos_t *b)
 static uint16_t gx0, gy0, gx1, gy1;
 static void road_seg(const w_road_t *r, uint8_t k, uint8_t leg)
 {
+    memcpy(&rr, r, sizeof rr);
     uint16_t m0, m1, n0, n1, t;
     t = k == r->n ? r->dmin : (uint16_t)((uint16_t)k << r->shift);
     n0 = (r->flags & W_R_MINNEG) ? (uint16_t)(r->a_min - t) : (uint16_t)(r->a_min + t);
     if (leg) {
         t = (uint8_t)(k + 1) == r->n ? r->dmin : (uint16_t)((uint16_t)(k + 1) << r->shift);
         n1 = (r->flags & W_R_MINNEG) ? (uint16_t)(r->a_min - t) : (uint16_t)(r->a_min + t);
-        m0 = m1 = road_x(r, (uint8_t)(k + 1));
+        m0 = m1 = rr_x((uint8_t)(k + 1));
     } else {
         n1 = n0;
-        m0 = road_x(r, k);
-        m1 = road_x(r, (uint8_t)(k + 1));
+        m0 = rr_x(k);
+        m1 = rr_x((uint8_t)(k + 1));
     }
     if (r->flags & W_R_MAJNEG) { t = (uint16_t)(r->a_maj - m1); m1 = (uint16_t)(r->a_maj - m0); m0 = t; }
     else { m0 = (uint16_t)(r->a_maj + m0); m1 = (uint16_t)(r->a_maj + m1); }
@@ -758,8 +857,8 @@ static uint8_t road_clashes(uint8_t ri)
 /* mark the coarse filter cells touched by the rectangle (gx0,gy0)-(gx1,gy1) with bits */
 static void sp_mark(uint8_t bits)
 {
-    uint16_t cx, cy, cx0 = (uint16_t)(gx0 - w_spx0) >> 7, cx1 = (uint16_t)(gx1 - w_spx0) >> 7;
-    uint16_t cy0 = (uint16_t)(gy0 - w_spy0) >> 7, cy1 = (uint16_t)(gy1 - w_spy0) >> 7;
+    uint16_t cx, cy, cx0 = (uint16_t)(gx0 - w_spx0) >> 8, cx1 = (uint16_t)(gx1 - w_spx0) >> 8;
+    uint16_t cy0 = (uint16_t)(gy0 - w_spy0) >> 8, cy1 = (uint16_t)(gy1 - w_spy0) >> 8;
     for (cy = cy0; cy <= cy1 && cy < 8; cy++)
         for (cx = cx0; cx <= cx1 && cx < 8; cx++)
             w_sp_mask[(cy << 3) | cx] |= bits;
@@ -776,8 +875,8 @@ static void sp_prepare(void)
 {
     uint8_t i, k, leg;
     const w_road_t *r;
-    w_spx0 = (uint16_t)((world.start.x - 512) & 0xFF80);   /* aligned: filter cells = m & ~127 */
-    w_spy0 = (uint16_t)((world.start.y - 512) & 0xFF80);
+    w_spx0 = (uint16_t)((world.start.x - 1024) & 0xFF00);   /* aligned: filter cells = m & ~255 */
+    w_spy0 = (uint16_t)((world.start.y - 1024) & 0xFF00);
     for (i = 0; i < 64; i++) w_sp_mask[i] = 0;
     for (i = 0; i < NUM_BEACONS; i++) sp_mark_box(&world.beacon[i], 6, (uint8_t)(W_SPM_BEACON0 << i));
     sp_mark_box(&world.heart, 4, W_SPM_OTHER);
@@ -849,14 +948,14 @@ void world_init(uint16_t seed) WBANKED
             uint16_t dist;
             bear = (uint8_t)(i * 85 - 8);
             bear = (uint8_t)(bear + (rnd() & 15));
-            dist = (uint16_t)(90 + (rnd() & 63));
-            dist = (uint16_t)(dist + (rnd() & 7));
+            dist = (uint16_t)(250 + (rnd() & 127));
+            dist = (uint16_t)(dist + (rnd() & 15));
             polar(&world.beacon[i], bear, dist);
         }
         hb = (uint8_t)(rnd() % 3);
         hb = (uint8_t)(43 - 8 + hb * 85);
         hb = (uint8_t)(hb + (rnd() & 15));
-        hdist = (uint16_t)(200 + (rnd() & 31));
+        hdist = (uint16_t)(450 + (rnd() & 127));
         hdist = (uint16_t)(hdist + (rnd() & 15));
         polar(&world.heart, hb, hdist);
         /* roads: start -> the gate point of each beacon (6 out along the road's major axis) */

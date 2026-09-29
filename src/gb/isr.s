@@ -41,7 +41,7 @@ _stat_isr::
     pop af
     reti
 
-; ---- land metatile queue: entry = addr lo, addr hi, mt, t0..t3, pad (64 x 8 bytes) ----
+; ---- land metatile queue: entry = addr lo, addr hi, mt, t0..t3, pad (32 x 8 bytes) ----
 ; All four tiles of a metatile slot share one 256-byte page (TL low byte <= 222), so only E moves.
 _bq_drain::
     ld a,(_bq_budget)
@@ -113,7 +113,7 @@ _bq_drain::
 .bq_next:
     ld a,(_bq_tail)
     inc a
-    and a,#63
+    and a,#31
     ld (_bq_tail),a
     dec b
     jr nz,.bq_loop

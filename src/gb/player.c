@@ -10,6 +10,10 @@
 #include "assets.h"
 
 /* hitbox relative to the foot point */
+#ifndef DMG_RUN_QPX
+#define DMG_RUN_QPX 6       /* DMG running speed in 1/4 px per frame (8 = same as CGB) */
+#endif
+
 #define HB_L (-5)
 #define HB_R 4
 #define HB_T (-5)
@@ -197,6 +201,14 @@ static uint8_t can_act(void)
 
 void light_beacon(uint8_t i) BANKED;
 
+static void sit_down(void)
+{
+    pl_state = PL_SIT;
+    idle_t = 0;
+    sfx_play(SFX_SIT);
+    ambient_tempo(near_warm);     /* time runs fast only by a fire */
+}
+
 static void act(void)
 {
     uint8_t m, i;
@@ -204,6 +216,8 @@ static void act(void)
     ft_age = 32;
     find_targets();
     m = tgt_mt;
+    /* A at a burning fire or beacon: sit and rest by it */
+    if (m == MT_FIRE_LIT || m == MT_BEACON_LIT) { sit_down(); return; }
     if (act_mt != 0xFF) {
         switch (act_mt) {
         case MT_FIRE_COLD:
@@ -297,6 +311,8 @@ static void act(void)
         }
         break;
     }
+    /* nothing to do here, but a fire is at hand: rest by it rather than a refusal */
+    if (land_scan_flag(MTF_WARM, 1)) { sit_down(); return; }
     sfx_play(SFX_NO);
     shake = 3;
 }
@@ -351,7 +367,9 @@ void player_update(void) BANKED
         if (pl_state == PL_SIT) ambient_tempo(0);
         pl_state = PL_WALK;
         idle_t = 0;
-        spd = (keys & J_B) ? 8 : 4;
+        /* quarter pixels per frame: walk 1 px, run 2 px (DMG: 1.5 px, so the land streamer
+           keeps up with the slower CPU; see DMG_RUN_QPX) */
+        spd = (keys & J_B) ? (is_cgb ? 8 : DMG_RUN_QPX) : 4;
         if (dx && dy) spd = (uint8_t)(spd - (spd >> 2));
         m = mt_off(0, -2);
         if (mt_flags[m] & MTF_SLOW) spd >>= 1;
@@ -378,22 +396,18 @@ void player_update(void) BANKED
         if (pl_state == PL_WALK) pl_state = PL_STAND;
         if (idle_t < 255) idle_t++;
         if (pl_state == PL_STAND && idle_t >= 180 && !(keys & (J_A | J_B))) {
-            pl_state = PL_SIT;
-            sfx_play(SFX_SIT);
-            ambient_tempo(1);
+            sit_down();
         }
     }
-    if (keys & (J_A | J_B | J_SELECT)) {
-        if (pl_state == PL_SIT) { pl_state = PL_STAND; ambient_tempo(0); }
-        idle_t = 0;
-    }
+    if (keys & (J_A | J_B | J_SELECT)) idle_t = 0;
+    if ((pressed & (J_B | J_SELECT)) && pl_state == PL_SIT) { pl_state = PL_STAND; ambient_tempo(0); }
 
     find_targets();
     /* reaching the revealed Heart is enough */
     if (act_mt == MT_HEART && heart_revealed && pl_state != PL_GLIDE) ending_req = 1;
     if (pressed & J_A) {
         if (pl_state == PL_SIT) { pl_state = PL_STAND; ambient_tempo(0); }
-        act();
+        else act();
     }
     if (pressed & J_SELECT) {
         uint8_t e = equipped, k;
@@ -447,6 +461,8 @@ void player_draw(void) BANKED
     y = (uint8_t)(24 + 68 - 15 + 16 - pl_lift);
     x = (uint8_t)(x + shake_x);
     prop = (uint8_t)(pal | flip);
+    /* DMG: the gliding cloak uses the light palette so it reads over dark crags */
+    if (pl_state == PL_GLIDE && !is_cgb) prop |= S_PALETTE;
     if (flip) {
         spr_set(SP_PLAYER, x, y, (uint8_t)(base + 2), prop);
         spr_set(SP_PLAYER + 1, (uint8_t)(x + 8), y, base, prop);

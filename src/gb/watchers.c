@@ -14,7 +14,7 @@
 uint8_t watch_on;             /* 1 while a Watcher stands */
 uint16_t watch_mx, watch_my;  /* its foot: metatile + pixel (like the wanderer) */
 uint8_t watch_sx, watch_sy;
-static uint8_t watch_t, watch_fade, watch_step;
+static uint8_t watch_t, watch_fade, watch_step, watch_warm;
 static uint16_t wrng = 0x7A3D;
 
 static uint8_t wr8(void)
@@ -30,6 +30,8 @@ static uint8_t wr8(void)
 void watchers_reset(void) BANKED
 {
     uint8_t i;
+    wrng = (uint16_t)(world.seed ^ ((uint16_t)vbl_frames << 8) ^ DIV_REG ^ 0x7A3Du);
+    if (!wrng) wrng = 0x7A3D;
     watch_on = 0;
     watch_t = 0;
     for (i = 0; i < 4; i++) spr_hide((uint8_t)(SP_WATCH + i));
@@ -59,6 +61,7 @@ static void try_spawn(void)
     watch_on = 1;
     watch_t = 0;
     watch_fade = 60;
+    watch_warm = 0;
 }
 
 void watchers_update(void) BANKED
@@ -72,18 +75,23 @@ void watchers_update(void) BANKED
         /* called every 16 frames while none stands: a roll every ~4 s; likelier in the Ash */
         if (!(night || ash) || pl_state == PL_SLEEP) return;
         watch_t = (uint8_t)(watch_t + 16);
-        if (watch_t == 0 && (wr8() & (ash ? 1 : 3)) == 0) try_spawn();
+        /* never near a fire: resting by one is safe */
+        if (watch_t == 0 && (wr8() & (ash ? 1 : 3)) == 0 && !warm_within(6)) try_spawn();
         return;
     }
     rx = rel_x();
     ry = rel_y();
     /* gone at dawn, or when left far behind */
     if ((!night && !ash) || rx > 150 || rx < -150 || ry > 110 || ry < -110) { watchers_reset(); return; }
+    /* the wanderer reached a fire's light: the figure withdraws */
+    if ((vbl_frames & 15) == 4) watch_warm = warm_within(6);
+    if (watch_warm && !watch_fade) watch_fade = 40;
+    if (watch_warm && watch_fade == 1) { watchers_reset(); return; }
     lit = glow_on;
     hidden = (uint8_t)((mt_flags[land_rel(0, 0)] & MTF_HIDE) != 0);
     if (watch_fade) watch_fade--;
     /* drift towards the light, one pixel every few frames */
-    if (lit && !hidden && !watch_fade && pl_state != PL_SLEEP) {
+    if (lit && !hidden && !watch_fade && !watch_warm && pl_state != PL_SLEEP) {
         if (++watch_step >= 5) {
             int8_t v;
             watch_step = 0;
@@ -93,8 +101,8 @@ void watchers_update(void) BANKED
             else if (ry < -1) { v = (int8_t)(watch_sy + 1); if (v >= 16) { v -= 16; watch_my++; } watch_sy = (uint8_t)v; }
         }
     }
-    /* the touch */
-    if (rx < 7 && rx > -7 && ry < 7 && ry > -7 && pl_state != PL_GLIDE && pl_state != PL_SLEEP) {
+    /* the touch (not while it withdraws) */
+    if (!watch_warm && rx < 7 && rx > -7 && ry < 7 && ry > -7 && pl_state != PL_GLIDE && pl_state != PL_SLEEP) {
         warmth = 0;
         watchers_reset();
         return;

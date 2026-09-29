@@ -26,7 +26,7 @@ PL_SLEEP, PL_STAND, PL_WALK, PL_SIT, PL_GLIDE = range(5)
 PH_DAWN, PH_DAY, PH_DUSK, PH_NIGHT = range(4)
 WX_CLEAR, WX_RAIN, WX_SNOW, WX_FOG, WX_STORM = range(5)
 IT_LANTERN, IT_STONES, IT_CLOAK = range(3)
-T_DAY, T_DUSK, T_NIGHT = 4320, 21600, 25920
+T_DAY, T_DUSK, T_NIGHT = 2880, 14400, 17280
 SRAM_SIZE = 8192
 SAVE_SLOTS = (0xA000, 0xB000)
 MTF_SOLID = 0x01
@@ -590,7 +590,7 @@ class RomTest(Base):
         self.assertTrue(g.wait(lambda: g.state() == GS_WHITEOUT, 600))
         self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 1200))
         self.assertEqual((g.u16('pl_mx'), g.u16('pl_my')), (w['start'][0], w['start'][1] + 1))
-        self.assertGreater(g.u16('warmth'), 900)
+        self.assertGreaterEqual(g.u16('warmth'), 500)     # a whiteout wakes you with two pips
         self.assertLess(g.u16('tod'), T_DAY)
         self.assertEqual(self.mods().get(w['start']), MT['MT_FIRE_LIT'])
         self.check_land('after whiteout')
@@ -680,6 +680,81 @@ class RomTest(Base):
         d1 = (g.u16('watch_mx') - mx) * 16 + g.u8('watch_sx') - sx
         self.assertLess(d1, 32, 'the Watcher did not drift towards the light')
         self.assertTrue(g.wait(lambda: g.state() == GS_WHITEOUT, 900), 'its touch did not white out')
+
+    def test_title_select_needs_a_hold_over_a_save(self):
+        g = self.g
+        g.new_world(self.SEED)
+        g.face('up')
+        g.press('a', after=10)                  # light the fire: a save
+        sram = g.sram()
+        g.stop()
+        self.g = g = Game(self.CGB, sram)
+        g.boot_to_title()
+        g.press('select', hold=10, after=30)    # a short press does nothing
+        self.assertEqual(g.state(), GS_TITLE)
+        g.shot('title_hold')
+        g.pb.button_press('select')
+        g.run(60)
+        self.assertEqual(g.state(), GS_TITLE)   # still guttering
+        g.shot('title_guttering')
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD, 400))
+        g.pb.button_release('select')
+        self.assertNotEqual(g.world()['seed'], self.SEED)
+
+    def test_a_at_lit_fire_sits_and_rests(self):
+        g = self.g
+        g.new_world(self.SEED)
+        g.face('up')
+        g.press('a', after=10)                  # light it
+        g.run(20)
+        g.press('a', after=4)                   # and rest by it
+        self.assertEqual(g.u8('pl_state'), PL_SIT)
+        self.assertEqual(g.u8('shake'), 0)
+        t0 = g.u16('tod')
+        g.run(60)
+        self.assertGreaterEqual(g.u16('tod') - t0, 60 * 7, 'time runs fast by a fire')
+        g.press('b', after=4)
+        self.assertNotEqual(g.u8('pl_state'), PL_SIT)
+
+    def test_sitting_in_the_open_is_normal_speed(self):
+        g = self.g
+        g.new_world(self.SEED)
+        g.teleport(*self.open_ground(g.world()['start']))
+        g.set_time(T_NIGHT + 1100)
+        g.run(200)                               # sits after ~3 s idle
+        self.assertEqual(g.u8('pl_state'), PL_SIT)
+        t0 = g.u16('tod')
+        g.run(60)
+        self.assertLessEqual(g.u16('tod') - t0, 62)
+
+    def test_watcher_withdraws_near_a_fire(self):
+        g = self.g
+        g.new_world(self.SEED)
+        g.face('up')
+        g.press('a', after=10)
+        g.hold(['down'], 12)
+        g.set_time(T_NIGHT + 1100)
+        g.run(20)
+        mx, my, sx, sy = g.pos()
+        g.set_u16('watch_mx', mx + 2)
+        g.set_u16('watch_my', my)
+        g.set_u8('watch_sx', sx)
+        g.set_u8('watch_sy', sy)
+        g.set_u8('watch_on', 1)
+        self.assertTrue(g.wait(lambda: g.u8('watch_on') == 0, 200), 'the Watcher stayed by the fire')
+        g.run(600)
+        self.assertEqual(g.state(), GS_WORLD)
+        self.assertEqual(g.u8('watch_on'), 0, 'a Watcher spawned by the fire')
+
+    def test_dmg_fog_keeps_the_land_legible(self):
+        g = self.g
+        g.new_world(self.SEED)
+        g.set_u8('weather', WX_FOG)
+        g.run(120)
+        bgp = g.u8('land_bgp')
+        shades = [(bgp >> (2 * c)) & 3 for c in range(4)]
+        self.assertNotEqual(shades[1], shades[2], 'fog merged ground and detail')
+        g.shot('fog')
 
     def test_no_frame_drops_walking(self):
         g = self.g

@@ -27,6 +27,7 @@ void split_enable(uint8_t on);
 /* land metatile writes: ring slot (0..15, 0..15) of map 0x9800, its 4 tiles (attrs from mt) */
 void bq_push(uint8_t col, uint8_t row, uint8_t mt, const uint8_t *t);
 uint8_t bq_pending(void);
+extern uint8_t scratch[160];           /* main-loop transient buffer (refill, map screen) */
 /* single tile (+CGB attribute) writes anywhere in the BG maps */
 void vq_push(uint16_t addr, uint8_t tile, uint8_t attr);
 uint8_t vq_pending(void);
@@ -55,6 +56,8 @@ void gfx_load_world_tiles(void);          /* BG world tileset + sprite tiles (LC
 void gfx_load_title(void);                /* title BG tiles/map/attr + sprite tiles */
 void gfx_load_map(uint8_t first, uint8_t *fog);  /* map frame tiles at `first`, fog pattern out */
 void hide_sprites_from(uint8_t first);
+/* running late in the frame (skip optional work) */
+#define FRAME_LATE() (LY_REG >= 96 && LY_REG < 144)
 void fade_to(uint8_t target, uint8_t speed) BANKED; /* animate pal_fade (runs frames) */
 void wait_frames(uint8_t n);
 

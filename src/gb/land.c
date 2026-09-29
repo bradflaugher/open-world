@@ -29,7 +29,8 @@ uint16_t dbg_mt_max;           /* longest world_mt call seen, in scanlines */
 static uint8_t job_i;
 static uint16_t job_c;          /* world column (col jobs) or row (row jobs) being built */
 static uint8_t job_buf[15];
-static uint8_t row_t[64], row_a[64];
+#define row_t (scratch)          /* refill row buffers (main loop, hook off) */
+#define row_a (scratch + 64)
 uint8_t edge_t[EDGE_CLASS_COUNT * 4 * EDGE_VARIANT_COUNT];   /* RAM copy of edge_tiles */
 static uint8_t mt_grp[MT_COUNT];      /* bit0: deep sea, bit1: any water (incl. stepping stones) */
 
@@ -76,9 +77,20 @@ static void cell_tiles(uint16_t x, uint16_t y, uint8_t m, uint8_t *t)
     if ((v = pick(s, e, se)) != 0xFF) t[3] = et[12 + v];
 }
 
-static uint8_t is_water(uint8_t m)
+/* does the water cell at (x, y) see an "other" cell among the 3 new neighbours at
+   (nx, y-1..y+1) (column commit) or (x-1..x+1, ny) (row commit)? Only then did its edge,
+   drawn while those were unknown, change. */
+static uint8_t fix_needed(uint16_t x, uint16_t y, uint8_t col, uint16_t nc)
 {
-    return (uint8_t)(m == MT_SEA || m == MT_SEA_GLINT || m == MT_SHALLOW);
+    uint8_t m = land_cache[SLOT(x, y)], cls, i;
+    if (m == MT_SEA || m == MT_SEA_GLINT) cls = 1;
+    else if (m == MT_SHALLOW) cls = 2;
+    else return 0;
+    for (i = 0; i < 3; i++) {
+        uint8_t n = col ? land_cache[SLOT(nc, (uint16_t)(y - 1 + i))] : land_cache[SLOT((uint16_t)(x - 1 + i), nc)];
+        if (!(mt_grp[n] & cls)) return 1;
+    }
+    return 0;
 }
 
 /* queue the cell's tiles for VBlank (it must be inside the window) */
@@ -178,7 +190,7 @@ static void job_commit(void)
         for (i = 0; i < 15; i++) {
             v = (uint16_t)(land_y0 + i);
             push_cell(job_c, v);
-            if (is_water(land_cache[SLOT(fix, v)])) push_cell(fix, v);   /* now fully known */
+            if (fix_needed(fix, v, 1, job_c)) push_cell(fix, v);   /* now fully known */
         }
     } else {
         for (i = 0; i < 15; i++) land_cache[SLOT((uint16_t)(land_x0 + i), job_c)] = job_buf[i];
@@ -187,7 +199,7 @@ static void job_commit(void)
         for (i = 0; i < 15; i++) {
             v = (uint16_t)(land_x0 + i);
             push_cell(v, job_c);
-            if (is_water(land_cache[SLOT(v, fix)])) push_cell(v, fix);
+            if (fix_needed(v, fix, 0, job_c)) push_cell(v, fix);
         }
     }
     land_changed = 1;

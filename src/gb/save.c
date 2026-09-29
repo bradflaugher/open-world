@@ -7,7 +7,7 @@
 #include "game.h"
 #include "gfx.h"
 
-#define SAVE_VERSION 1
+#define SAVE_VERSION 2   /* 2: 16x16-metatile visited chunks */
 #define SRAM_PRIMARY ((uint8_t *)0xA000)
 #define SRAM_BACKUP  ((uint8_t *)0xB000)
 

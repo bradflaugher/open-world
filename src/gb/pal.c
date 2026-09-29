@@ -45,7 +45,7 @@ uint8_t shade_fade(uint8_t p, uint8_t f) BANKED
     return shade_lerp(p, 0x00, f);
 }
 
-static const uint8_t fog_tab[4] = { 0, 1, 1, 2 };   /* contrast collapses in fog */
+static const uint8_t fog_tab[4] = { 0, 1, 2, 2 };   /* contrast softens in fog: 3 -> 2, the rest stays legible */
 
 static uint8_t shade_fog(uint8_t p)
 {

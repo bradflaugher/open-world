@@ -104,13 +104,16 @@ void band_build(void) BANKED
     for (i = 0; i < 5; i++) band_mark_x[i] = 0xFF;
 }
 
-void band_stars(uint8_t on) BANKED
+uint8_t band_stars(uint8_t on) BANKED
 {
     uint8_t i, t;
+    /* never block a game frame on a full queue: the next phase update will redo it */
+    if (vq_pending() > 31 - 1 - NSTARS) return 0;
     for (i = 0; i < nstars; i++) {
         t = on ? star_tile[i] : band_row[star_row[i]][star_col[i]];
         vq_push((uint16_t)(0x9C00u + ((uint16_t)star_row[i] << 5) + star_col[i]), t, PAL_SKY);
     }
+    return 1;
 }
 
 static uint8_t face_bearing(void)
@@ -158,7 +161,7 @@ void band_update(void) BANKED
     nx_band_scx = (uint8_t)(a - 80);
 
     /* one bearing refreshed every 8 frames (world_bearing is a banked CORDIC) */
-    if ((vbl_frames & 7) == 1) switch (mark_rr) {
+    if ((vbl_frames & 7) == 1 && !FRAME_LATE()) switch (mark_rr) {
     case 0: case 1: case 2:
         mark_b[mark_rr] = world_bearing(pl_mx, pl_my, world.beacon[mark_rr].x, world.beacon[mark_rr].y);
         break;
@@ -176,6 +179,7 @@ void band_update(void) BANKED
     /* markers move only when the band turns or a bearing / state changes */
     i = (uint8_t)(beacons_lit | (heart_revealed << 3) | ((cairn_near != 0xFF) << 4));
     if (a == mark_last_a && i == mark_last_state && (vbl_frames & 7) != 2) return;
+    if (FRAME_LATE()) return;
     mark_last_a = a;
     mark_last_state = i;
     for (i = 0; i < 5; i++) {
