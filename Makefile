@@ -25,7 +25,7 @@ GB_OBJS := $(patsubst src/core/%.c,$(OBJ)/core_%.o,$(CORE_SRC)) \
            $(OBJ)/assets.o \
            $(patsubst src/gb/%.s,$(OBJ)/%_s.o,$(GB_ASM))
 
-.PHONY: all rom assets test test-host test-assets test-rom test-ubsan screenshots clean
+.PHONY: all rom assets test test-host test-assets test-rom test-perf test-ubsan screenshots mgba clean
 
 all: rom
 
@@ -87,6 +87,18 @@ test-rom: $(ROM) $(BUILD)/owgen
 	$(PYTHON) -m unittest discover -s tests -p 'test_rom.py' -v
 	$(PYTHON) -m unittest discover -s tests -p 'test_core_rom.py' -v
 	$(PYTHON) -m unittest discover -s tests -p 'test_playthrough.py' -v
+	$(PYTHON) -m unittest discover -s tests -p 'test_perf.py' -v
+
+# frame budget / stack headroom only (PyBoy DMG + CGB; mGBA too when build/mgba_server exists)
+test-perf: $(ROM)
+	$(PYTHON) -m unittest discover -s tests -p 'test_perf.py' -v
+
+# optional: the headless mGBA harness (cycle-accurate; needs libmgba-dev). test_perf / the
+# autopilot use it when present and skip it otherwise.
+mgba: $(BUILD)/mgba_server
+
+$(BUILD)/mgba_server: tools/mgba/mgba_server.c | $(BUILD)
+	$(CC) -O2 -o $@ $< -lmgba
 
 screenshots: $(ROM) $(BUILD)/owgen
 	$(PYTHON) tools/screenshots.py

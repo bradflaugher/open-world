@@ -343,7 +343,7 @@ static void glide_tick(void)
 void player_update(void) BANKED
 {
     int8_t dx = 0, dy = 0;
-    uint8_t spd, n, moved = 0, pure, m;
+    uint8_t spd, n, moved = 0, pure, m, slow;
 
     if (burn_t) {
         burn_t--;
@@ -374,7 +374,10 @@ void player_update(void) BANKED
         spd = (keys & J_B) ? (is_cgb ? 8 : DMG_RUN_QPX) : 4;
         if (dx && dy) spd = (uint8_t)(spd - (spd >> 2));
         m = mt_off(0, -2);
-        if (mt_flags[m] & MTF_SLOW) spd >>= 1;
+        /* heavy ground (shallows, drifts, dunes): 3/4 speed and shorter strides, so it reads
+           as wading rather than as the game slowing down */
+        slow = (uint8_t)(mt_flags[m] & MTF_SLOW);
+        if (slow) spd = (uint8_t)(spd - (spd >> 2));
         pure = (uint8_t)!(dx && dy);
         if (dx) {
             acc_x = (uint8_t)(acc_x + spd);
@@ -392,7 +395,8 @@ void player_update(void) BANKED
             walk_px = (uint8_t)(walk_px + moved);
             if (walk_px >= 8) { walk_px -= 8; pl_anim ^= 1; }
             step_px = (uint8_t)(step_px + moved);
-            if (step_px >= 16) { step_px -= 16; footstep(); }
+            n = (uint8_t)(slow ? 11 : 16);      /* stride */
+            if (step_px >= n) { step_px -= n; footstep(); }
         }
     } else {
         if (pl_state == PL_WALK) pl_state = PL_STAND;
@@ -404,7 +408,9 @@ void player_update(void) BANKED
     if (keys & (J_A | J_B | J_SELECT)) idle_t = 0;
     if ((pressed & (J_B | J_SELECT)) && pl_state == PL_SIT) { pl_state = PL_STAND; ambient_tempo(0); }
 
-    find_targets();
+    /* DMG: the target probe runs on odd frames only (a frame of latency on the hint / A is
+       invisible) so it never shares a frame's budget with the even-frame jobs */
+    if (is_cgb || (vbl_frames & 1) || (pressed & J_A)) find_targets();
     /* reaching the revealed Heart is enough */
     if (act_mt == MT_HEART && heart_revealed && pl_state != PL_GLIDE) ending_req = 1;
     if (pressed & J_A) {

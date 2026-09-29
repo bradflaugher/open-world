@@ -30,7 +30,7 @@ static uint8_t srand8(void)
 
 static const int8_t sway[16] = { 0, 1, 1, 2, 2, 2, 1, 1, 0, -1, -1, -2, -2, -2, -1, -1 };
 
-static uint8_t wx_rolled = 0xFF;
+static uint8_t wx_rolled = 1;
 static int8_t wx_prev_dcx;
 /* per-drop constants: i * 9 mod 120 (row) and i * 5 (sway phase) */
 static const uint8_t wx_top[NUM_WX] = { 0, 9, 18, 27, 36, 45, 54, 63, 72, 81, 90, 99, 108 };
@@ -85,7 +85,9 @@ static void weather_draw(void)
     wx_hidden = 0;
     /* DMG: half the drops each frame (odd / even), each moving by the last two frames' scroll,
      * so the work is spread instead of all landing on every other frame */
-    if (wx_rolled != weather) { wx_rolled = weather; fx_weather_roll(); }
+    /* drops are rolled once (fx_redraw, main loop); a weather change keeps their (random)
+       places, so no 13-number roll ever lands in the game frame */
+    if (wx_rolled) { wx_rolled = 0; fx_weather_roll(); }
     if (weather == WX_SNOW) { tile = SPR_SNOW; fall = (uint8_t)(vbl_frames & 1); }   /* 1 px / 2 frames */
     else { tile = SPR_RAIN; fall = weather == WX_STORM ? 5 : 4; }
     pal = is_cgb ? OPAL_WEATHER : S_PALETTE;
@@ -177,19 +179,16 @@ void fx_redraw(void) BANKED
 {
     glow_last = 0xFF;
     wx_hidden = 0;
+    if (wx_rolled) { wx_rolled = 0; fx_weather_roll(); }
     hud_key[5] = 0;
 }
 
 void fx_update(void) BANKED
 {
-    PSTAGE(11);
     glow_draw();
-    PSTAGE(12);
     if (FRAME_LATE()) return;       /* the rest can wait a frame */
     weather_draw();
-    PSTAGE(13);
     storm_tick();
-    PSTAGE(14);
     /* fog rolls in and out slowly */
     if ((vbl_frames & 7) == 0) {
         uint8_t f = pal_fog;
