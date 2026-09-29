@@ -98,7 +98,9 @@ extern world_layout_t world;       /* filled by world_init */
  * Slow (~0.5-1 s on the Game Boy): call once per world, never per frame. */
 void    world_init(uint16_t seed) WBANKED;
 uint8_t world_mt(uint16_t mx, uint16_t my);    /* final metatile incl. mods; the hot path */
-uint8_t world_mt_base(uint16_t mx, uint16_t my);/* generated metatile, ignoring mods */
+/* generated metatile, ignoring mods: a lookup, except on a modded cell (then it rebuilds that
+ * block: slow, ~20k M-cycles; banked) */
+uint8_t world_mt_base(uint16_t mx, uint16_t my) WBANKED;
 uint8_t world_biome(uint16_t mx, uint16_t my); /* biome of that cell (cheap-ish) */
 uint8_t world_map_shade(uint16_t mx, uint16_t my); /* 0..3 map shade for the map screen (fast, coarse) */
 uint8_t world_detail(uint16_t mx, uint16_t my); /* 0..255 hash for per-cell variation (tile flips, anims) */
@@ -108,11 +110,13 @@ uint8_t world_detail(uint16_t mx, uint16_t my); /* 0..255 hash for per-cell vari
 typedef struct { uint16_t x, y; uint8_t mt; } wmod_t;
 extern wmod_t  world_mods[MAX_MODS];
 extern uint8_t world_mod_count;
-uint8_t world_mod_set(uint16_t mx, uint16_t my, uint8_t mt); /* add/replace; returns 0 if table full */
-void    world_mods_clear(void);
-/* Rebuild the mods lookup index. Call after writing world_mods[] / world_mod_count directly
- * (e.g. after loading a save). world_mt also rebuilds lazily when world_mod_count changes. */
-void    world_mods_rebuild(void);
+/* add/replace; returns 0 if the table is full. Banked, ~3k M-cycles (linear scan): per event only */
+uint8_t world_mod_set(uint16_t mx, uint16_t my, uint8_t mt) WBANKED;
+void    world_mods_clear(void) WBANKED;
+/* Rebuild the mods lookup filter and drop cached blocks. Call after writing world_mods[] /
+ * world_mod_count directly (e.g. after loading a save). world_mt also does it by itself when
+ * world_mod_count changed, but not if entries were rewritten in place with the same count. */
+void    world_mods_rebuild(void) WBANKED;
 
 /* ---- ancient cairns carried over from earlier worlds (offsets from start) ---- */
 #define MAX_OLD_CAIRNS 32
@@ -126,9 +130,9 @@ uint8_t world_bearing(uint16_t fx, uint16_t fy, uint16_t tx, uint16_t ty) WBANKE
 uint16_t world_dist(uint16_t ax, uint16_t ay, uint16_t bx, uint16_t by) WBANKED;   /* approx (octagonal) distance, wraps */
 
 #ifdef WORLD_INTERNAL
-/* ---- shared between world.c (hot) and world_gen.c (cold); not part of the engine API ---- */
+/* ---- shared between world.c (hot, bank 0) and world_gen.c (cold, banked); not engine API ---- */
 #define W_NUM_ROADS (NUM_BEACONS + 1)
-#define W_ROAD_POOL 168                   /* breakpoint bytes shared by all roads */
+#define W_ROAD_POOL 104                   /* breakpoint bytes shared by all roads */
 typedef struct {
     uint16_t a_maj, a_min;                /* start point, (major, minor) axis */
     uint16_t bx, by, bw, bh;              /* bounding box: x in [bx, bx+bw], y in [by, by+bh] */
@@ -143,13 +147,51 @@ typedef struct {
 #define W_R_MINNEG 4                      /* minor coordinate decreases along the road */
 extern w_road_t w_roads[W_NUM_ROADS];
 extern uint8_t  w_road_x[W_ROAD_POOL];    /* |major - a_maj| of each breakpoint */
-extern uint8_t  w_s0, w_s1;               /* seed bytes mixed into every hash */
+extern uint8_t  w_s0, w_s1, w_salt;       /* seed bytes mixed into every hash; salt of the next */
 extern uint8_t  w_ready;                  /* set pieces valid */
 extern uint8_t  w_start_ground;
 extern uint16_t w_spx0, w_spy0;           /* coarse filter origin (64-metatile cells) */
 extern uint8_t  w_sp_bits[32];            /* 16 x 16 cells, bit set = set piece / road there */
 extern const uint8_t w_perm[256];
+extern const uint8_t w_biome_ground[B_COUNT];
+extern const uint8_t w_bitmask[8];
+extern uint8_t  w_le, w_lm, w_ls;         /* w_lattice outputs */
+/* block cache (see world.c) */
+#define W_BC_N 8
+extern uint16_t w_bcx[W_BC_N], w_bcy[W_BC_N];
+extern uint8_t  w_bcm[W_BC_N][16];
+extern uint8_t  w_mod_bloom[16], w_mods_seen, w_mods_off;
+/* the POI of the current 16x16 cell */
+extern uint16_t w_pq_x, w_pq_y;
+extern uint8_t  w_pq_type, w_pq_px, w_pq_py, w_pq_ok, w_pq_ground, w_pq_axis;
+
+uint8_t w_hash(uint16_t x, uint16_t y);   /* 4-round permutation hash with w_salt */
+uint8_t w_hash_s(uint16_t x, uint16_t y, uint8_t salt);
+uint8_t w_classify(uint8_t e, uint8_t m, uint8_t s);
+uint8_t w_classify_base(uint8_t e, uint8_t m);
+uint8_t w_bslot(uint16_t kx, uint16_t ky);
+uint8_t w_mod_bit(uint16_t kx, uint16_t ky);
+void    w_blocks_reset(void);
 void    w_reset(void);                    /* clear all caches (seed or layout changed) */
+/* cold helpers called (rarely) from the hot path; banked on the Game Boy */
+void    w_lattice(uint16_t lx, uint16_t ly) WBANKED;  /* fields at lattice point (mx>>2, my>>2) */
+void    w_lattice_reset(void) WBANKED;
+void    w_poi_roll(uint16_t cx, uint16_t cy) WBANKED; /* the roll for a 16x16 cell -> w_pq_* */
+void    w_poi_check(uint16_t px, uint16_t py) WBANKED; /* lazy biome check of the POI */
+uint8_t w_poi_mt(uint8_t ax, uint8_t ay, uint8_t d) WBANKED; /* POI tile at |offset|, or 0xFF */
+#define W_SP_NONE  0xFF                   /* w_pieces: no set piece here */
+#define W_SP_CLEAR 0xFE                   /* w_pieces: start clearing (base unless solid) */
+uint8_t w_pieces(uint16_t kx, uint16_t ky, uint8_t *out) WBANKED; /* 4x4 block overrides; 0 if none */
+uint8_t w_ruin(uint16_t mx, uint16_t my, uint8_t d, uint8_t ground) WBANKED;
+uint8_t w_old_cairn(uint16_t mx, uint16_t my) WBANKED;
+#define W_POI_NONE 0
+#define W_POI_FIRE 1
+#define W_POI_MONOLITH 2
+#define W_POI_TABLE 3
+#define W_POI_WELL 4
+#define W_POI_HAND 5
+#define W_POI_ROAD 6
+#define W_T_SHORE 114                     /* elevation thresholds shared with the generator */
 #endif
 
 

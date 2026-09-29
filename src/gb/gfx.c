@@ -18,6 +18,7 @@ volatile uint8_t vbl_frames;
 uint16_t dbg_frame_drops;
 uint16_t dbg_vbl_count;
 uint8_t dbg_count_on;
+uint8_t dbg_vbl_ly[2];
 
 volatile uint8_t split_mode;
 uint8_t nx_band_scx, nx_land_scx, nx_land_scy, nx_band_bgp = 0xE4, nx_land_bgp = 0xE4;
@@ -113,8 +114,10 @@ static void vbl_isr(void)
     if (is_cgb) VBK_REG = vbk;
     vbl_frames++;
     if (dbg_count_on) dbg_vbl_count++;
+    dbg_vbl_ly[0] = LY_REG;
     __asm__("ei");
     sound_tick();
+    dbg_vbl_ly[1] = LY_REG;
 }
 
 void frame_sync(void)
@@ -148,20 +151,6 @@ void wait_frames(uint8_t n)
         frame_commit();
         frame_sync();
     }
-}
-
-void spr_set(uint8_t i, uint8_t x, uint8_t y, uint8_t tile, uint8_t prop)
-{
-    uint8_t *p = &oam[i << 2];
-    p[0] = y;
-    p[1] = x;
-    p[2] = tile;
-    p[3] = prop;
-}
-
-void spr_hide(uint8_t i)
-{
-    oam[i << 2] = 0;
 }
 
 void hide_sprites_from(uint8_t first)

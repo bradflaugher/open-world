@@ -116,6 +116,7 @@ void map_screen(void) BANKED
 {
     uint8_t i, r, tx, ty, px, py, done = 0, t = 0, dx, dy, k;
     uint8_t keys_old;
+    dbg_count_on = 0;
     game_state = GS_MAP;
     sfx_play(SFX_MAP);
     ambient_mode(AMB_MAP);

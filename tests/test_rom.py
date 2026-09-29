@@ -231,3 +231,396 @@ class Game:
 
     def stop(self):
         self.pb.stop(save=False)
+
+
+DIRV = {'up': (0, -1), 'down': (0, 1), 'left': (-1, 0), 'right': (1, 0)}
+
+
+class Base(unittest.TestCase):
+    CGB = False
+    SEED = 0x1234
+
+    @classmethod
+    def setUpClass(cls):
+        for f in (ROM, SYM, OWGEN):
+            if not os.path.exists(f):
+                raise unittest.SkipTest(f'missing {f}; run make rom build/owgen')
+
+    def setUp(self):
+        self.g = Game(self.CGB)
+
+    def tearDown(self):
+        self.g.stop()
+
+    # ---- helpers
+    def flags(self, mt):
+        return self.g.pb.memory[self.g.addr('mt_flags') + mt]
+
+    def walkable(self, mt):
+        return not (self.flags(mt) & MTF_SOLID)
+
+    def mt_now(self, x, y):
+        """World metatile as the ROM sees it (host generator + the ROM's mods)."""
+        return self.mods().get((x, y), host_region(self.SEED, x, y, 1, 1)[(x, y)])
+
+    def mods(self):
+        g = self.g
+        n = g.u8('world_mod_count')
+        a = g.addr('world_mods')
+        out = {}
+        for i in range(n):
+            b = a + i * 5
+            m = g.pb.memory
+            out[(m[b] | m[b + 1] << 8, m[b + 2] | m[b + 3] << 8)] = m[b + 4]
+        return out
+
+    def check_land(self, what):
+        g = self.g
+        g.run(6)   # let the VBlank queue drain
+        ring = g.land_ring()
+        cmx, cmy = g.u16('cam_mx'), g.u16('cam_my')
+        host = host_region(self.SEED, cmx, cmy, 11, 9)
+        host.update({k: v for k, v in self.mods().items() if k in host})
+        bad = [(k, ring[k], host[k]) for k in host if ring[k] != host[k]]
+        self.assertEqual(bad, [], f'{what}: land VRAM differs from owgen at {bad[:4]}')
+
+    def stand_next_to(self, target, max_r=3):
+        """Teleport onto a walkable cell 4-adjacent to target and face it. Returns the dir."""
+        tx, ty = target
+        for d, (dx, dy) in DIRV.items():
+            x, y = (tx - dx) & 0xFFFF, (ty - dy) & 0xFFFF
+            if self.walkable(self.mt_now(x, y)):
+                self.g.teleport(x, y)
+                self.g.face(d)
+                return d
+        self.fail(f'no walkable cell next to {target}')
+
+
+class RomTest(Base):
+    def test_boot_title(self):
+        g = self.g
+        g.boot_to_title()
+        self.assertEqual(g.u8('is_cgb'), 1 if self.CGB else 0)
+        g.run(30)
+        g.shot('title')
+
+    def test_stream_matches_host_walking(self):
+        g = self.g
+        g.new_world(self.SEED)
+        self.assertEqual(g.world()['seed'], self.SEED)
+        self.check_land('spawn')
+        g.shot('day')
+        for keys, n in ((['right'], 90), (['down'], 70), (['left', 'b'], 60), (['up', 'b'], 60),
+                        (['down', 'right', 'b'], 80), (['up', 'left'], 70), (['up', 'right', 'b'], 60),
+                        (['down', 'left', 'b'], 60)):
+            g.hold(keys, n)
+            self.check_land('after ' + '+'.join(keys))
+        # far away, then keep streaming there
+        w = g.world()
+        g.teleport(w['beacon'][1][0], (w['beacon'][1][1] + 2) & 0xFFFF)
+        self.check_land('teleport')
+        g.hold(['left', 'b'], 90)
+        self.check_land('after teleport walk')
+
+    def test_split_line_is_clean(self):
+        g = self.g
+        g.new_world(self.SEED)
+        g.hold(['right'], 20)
+        if self.CGB:
+            return
+        for _ in range(3):
+            g.run(7)
+            img = g.pb.screen.ndarray
+            exp = self.render_bg_lines(range(20, 28))
+            spr = self.sprite_columns(range(20, 28))
+            for ly in range(20, 28):
+                for x in range(160):
+                    if (ly, x) in spr:
+                        continue
+                    self.assertEqual(img[ly][x][0], exp[ly][x], f'line {ly} x {x} differs')
+
+    def render_bg_lines(self, lines):
+        g, m = self.g, self.g.pb.memory
+        shades = (255, 170, 85, 0)
+        out = {}
+        for ly in lines:
+            band = ly < 24
+            base = 0x9C00 if band else 0x9800
+            scx = g.u8('band_scx') if band else g.u8('land_scx')
+            scy = 0 if band else g.u8('land_scy')
+            bgp = g.u8('band_bgp') if band else g.u8('land_bgp')
+            row = []
+            y = (scy + ly) & 255
+            for x in range(160):
+                px = (scx + x) & 255
+                t = m[base + (y >> 3) * 32 + (px >> 3)]
+                ta = 0x9000 + t * 16 if t < 128 else 0x8800 + (t - 128) * 16
+                lo, hi = m[ta + (y & 7) * 2], m[ta + (y & 7) * 2 + 1]
+                bit = 7 - (px & 7)
+                c = ((lo >> bit) & 1) | (((hi >> bit) & 1) << 1)
+                row.append(shades[(bgp >> (c * 2)) & 3])
+            out[ly] = row
+        return out
+
+    def sprite_columns(self, lines):
+        m = self.g.pb.memory
+        cov = set()
+        for i in range(40):
+            y, x = m[0xFE00 + i * 4] - 16, m[0xFE00 + i * 4 + 1] - 8
+            for ly in lines:
+                if y <= ly < y + 16:
+                    for px in range(x, x + 8):
+                        cov.add((ly, px))
+        return cov
+
+    def test_light_start_fire_and_save(self):
+        g = self.g
+        g.new_world(self.SEED)
+        w = g.world()
+        start = w['start']
+        self.assertEqual(self.mt_now(*start), MT['MT_FIRE_COLD'])
+        saves = g.u8('dbg_saves')
+        g.face('up')
+        g.press('a', after=10)
+        self.assertEqual(self.mods().get(start), MT['MT_FIRE_LIT'])
+        self.assertEqual((g.u16('respawn_x'), g.u16('respawn_y')), start)
+        self.assertGreater(g.u8('dbg_saves'), saves)
+        sram = g.sram()
+        self.assertEqual(sram[0:2], b'OW')
+        self.assertEqual(sram[0x1000:0x1002], b'OW')
+        g.run(30)
+        g.shot('fire_lit')
+        self.check_land('fire lit')
+
+    def test_collision_blocks_solid(self):
+        g = self.g
+        g.new_world(self.SEED)
+        sx, sy = g.world()['start']
+        reg = host_region(self.SEED, sx - 12, sy - 12, 24, 24)
+        tried = 0
+        for (x, y), m in sorted(reg.items()):
+            if not (self.flags(m) & MTF_SOLID) or m == MT['MT_FIRE_COLD']:
+                continue
+            for d, (dx, dy) in DIRV.items():
+                ax, ay = x - dx, y - dy
+                if (ax, ay) in reg and self.walkable(reg[(ax, ay)]) and self.walkable(reg.get((ax - dx, ay - dy), 0)):
+                    g.teleport(ax, ay)
+                    g.hold([d], 40)
+                    px, py, qx, qy = g.pos()
+                    fx, fy = px * 16 + qx, py * 16 + qy
+                    # the hitbox ([-5,4] x [-5,0] round the foot) never enters the solid cell
+                    self.assertFalse(x * 16 - 4 <= fx <= x * 16 + 20 and y * 16 <= fy <= y * 16 + 20
+                                     and (px, py) == (x, y), 'walked into a solid cell')
+                    if d == 'right':
+                        self.assertLessEqual(fx + 4, x * 16 - 1)
+                    if d == 'left':
+                        self.assertGreaterEqual(fx - 5, x * 16 + 16)
+                    if d == 'down':
+                        self.assertLessEqual(fy, y * 16 - 1)
+                    if d == 'up':
+                        self.assertGreaterEqual(fy - 5, y * 16 + 16)
+                    tried += 1
+                    break
+            if tried >= 4:
+                break
+        self.assertGreaterEqual(tried, 2)
+
+    def test_beacon_shrines_stones_glide(self):
+        g = self.g
+        g.new_world(self.SEED)
+        w = g.world()
+        # shrine 0 holds the stones
+        self.stand_next_to(w['shrine'][0])
+        g.press('a', after=10)
+        self.assertTrue(g.u8('items') & (1 << IT_STONES))
+        self.assertEqual(g.u8('equipped'), IT_STONES)
+        self.assertEqual(g.u8('stones'), 12)
+        self.assertEqual(self.mods().get(w['shrine'][0]), MT['MT_SHRINE_EMPTY'])
+        g.shot('shrine')
+        # beacon 0 lights (any item equipped)
+        self.stand_next_to(w['beacon'][0])
+        g.press('a', after=20)
+        self.assertEqual(g.u8('beacons_lit') & 1, 1)
+        self.assertEqual(self.mods().get(w['beacon'][0]), MT['MT_BEACON_LIT'])
+        g.run(40)
+        g.shot('beacon_lit')
+        # a cairn on open ground, then pick it up again
+        bx, by = w['beacon'][0]
+        self.stand_next_to((bx + 2, by + 1))
+        before = g.u8('stones')
+        g.press('a', after=6)
+        if g.u8('cairn_n') == 1:
+            self.assertEqual(g.u8('stones'), before - 1)
+            g.press('a', after=6)
+            self.assertEqual(g.u8('cairn_n'), 0)
+            self.assertEqual(g.u8('stones'), before)
+        # stepping stone on the shallows round beacon 1
+        b1 = w['beacon'][1]
+        reg = host_region(self.SEED, b1[0] - 7, b1[1] - 7, 15, 15)
+        shallow = [k for k, v in reg.items() if v == MT['MT_SHALLOW']]
+        placed = False
+        for s in sorted(shallow, key=lambda k: abs(k[0] - b1[0]) + abs(k[1] - b1[1]), reverse=True):
+            for d, (dx, dy) in DIRV.items():
+                a = (s[0] - dx, s[1] - dy)
+                if a in reg and self.walkable(reg[a]):
+                    g.teleport(*a)
+                    g.face(d)
+                    g.press('a', after=6)
+                    if self.mods().get(s) == MT['MT_STEPSTONE']:
+                        placed = True
+                        g.hold([d], 24)
+                        self.assertEqual((g.u16('pl_mx'), g.u16('pl_my')), s, 'could not step onto the stone')
+                    break
+            if placed:
+                break
+        self.assertTrue(placed, 'no stepping stone placed')
+        self.check_land('stepping stone')
+        # the cloak glides over a crag
+        g.set_u8('items', 7)
+        g.set_u8('equipped', IT_CLOAK)
+        sx, sy = w['start']
+        glided = False
+        reg = host_region(self.SEED, sx - 40, sy - 40, 80, 80)
+        for (x, y), m in sorted(reg.items()):
+            if m != MT['MT_ROCK']:
+                continue
+            for d, (dx, dy) in DIRV.items():
+                a, l = (x - dx, y - dy), (x + 2 * dx, y + 2 * dy)
+                mid = (x + dx, y + dy)
+                if a in reg and l in reg and mid in reg and self.walkable(reg[a]) and self.walkable(reg[l]) \
+                        and self.flags(reg[mid]) & (MTF_GLIDE) | (not self.flags(reg[mid]) & MTF_SOLID):
+                    g.teleport(*a)
+                    g.face(d)
+                    g.pb.button_press('a')
+                    g.run(12)
+                    self.assertEqual(g.u8('pl_state'), PL_GLIDE)
+                    g.shot('glide')
+                    g.pb.button_release('a')
+                    g.run(30)
+                    self.assertEqual((g.u16('pl_mx'), g.u16('pl_my')), l)
+                    glided = True
+                    break
+            if glided:
+                break
+        self.assertTrue(glided, 'no rock to glide over near the start')
+        self.check_land('after glide')
+
+    def test_whiteout_respawn(self):
+        g = self.g
+        g.new_world(self.SEED)
+        w = g.world()
+        g.face('up')
+        g.press('a', after=10)      # light the start fire: the respawn point
+        g.hold(['down', 'b'], 60)
+        g.set_time(T_NIGHT + 100)
+        g.run(40)
+        g.shot('night')
+        g.set_u16('warmth', 3)
+        self.assertTrue(g.wait(lambda: g.state() == GS_WHITEOUT, 600))
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 1200))
+        self.assertEqual((g.u16('pl_mx'), g.u16('pl_my')), (w['start'][0], w['start'][1] + 1))
+        self.assertGreater(g.u16('warmth'), 900)
+        self.assertLess(g.u16('tod'), T_DAY)
+        self.assertEqual(self.mods().get(w['start']), MT['MT_FIRE_LIT'])
+        self.check_land('after whiteout')
+
+    def test_map_opens_and_restores(self):
+        g = self.g
+        g.new_world(self.SEED)
+        g.hold(['right', 'b'], 60)
+        g.press('start', after=10)
+        self.assertTrue(g.wait(lambda: g.state() == GS_MAP, 200))
+        g.run(120)
+        g.shot('map')
+        g.press('start', after=10)
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 1200))
+        g.run(10)
+        self.check_land('after map')
+        self.assertEqual(g.u8('split_mode'), 1)
+
+    def test_save_roundtrip_continue(self):
+        g = self.g
+        g.new_world(self.SEED)
+        g.face('up')
+        g.press('a', after=10)
+        g.hold(['right'], 40)
+        g.face('left')
+        # a save with the wanderer away from the fire: build a cairn needs stones; light instead
+        g.set_u8('items', 3)
+        g.set_u8('equipped', IT_STONES)
+        g.set_u8('stones', 5)
+        g.hold(['down'], 30)
+        g.press('a', after=10)
+        pos = g.pos()
+        sram = g.sram()
+        g.stop()
+        self.g = g = Game(self.CGB, sram)
+        g.boot_to_title()
+        g.press('a')
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 3000))
+        self.assertEqual(g.world()['seed'], self.SEED)
+        self.assertEqual(g.pos(), pos)
+        self.assertEqual(self.mods().get(g.world()['start']), MT['MT_FIRE_LIT'])
+        g.wake()
+        self.check_land('continued')
+        # a torn primary falls back to the backup copy
+        bad = bytearray(sram)
+        bad[5] ^= 0x5A
+        g.stop()
+        self.g = g = Game(self.CGB, bytes(bad))
+        g.boot_to_title()
+        g.press('a')
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD, 3000))
+        self.assertEqual(g.pos(), pos)
+
+    def test_ending_new_world(self):
+        g = self.g
+        g.new_world(self.SEED)
+        w = g.world()
+        g.set_u8('beacons_lit', 7)
+        g.set_u8('heart_revealed', 1)
+        self.stand_next_to(w['heart'])
+        g.run(10)
+        g.press('a')
+        self.assertTrue(g.wait(lambda: g.state() == GS_ENDING, 60))
+        g.run(200)
+        g.shot('ending')
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD, 3000))
+        self.assertEqual(g.u8('worlds_done'), 1)
+        self.assertNotEqual(g.world()['seed'], self.SEED)
+        self.assertEqual(g.u8('beacons_lit'), 0)
+
+    def test_no_frame_drops_walking(self):
+        g = self.g
+        g.new_world(self.SEED)
+        g.run(30)
+        d0 = g.u16('dbg_frame_drops')
+        for keys in (['right'], ['down', 'b'], ['left'], ['up', 'right', 'b'], ['down', 'left'], ['right', 'b']):
+            g.hold(keys, 100)
+        self.assertEqual(g.u16('dbg_frame_drops') - d0, 0, 'frames dropped while walking')
+
+    def test_sprites_per_line_at_night_in_rain(self):
+        g = self.g
+        g.new_world(self.SEED)
+        g.set_time(T_NIGHT + 50)
+        g.set_u8('weather', WX_RAIN)
+        g.run(30)
+        worst = 0
+        g.pb.button_press('right')
+        for f in range(240):
+            g.run(1)
+            if f % 3 == 0:
+                worst = max(worst, max(g.oam_line_counts()))
+            if f == 120:
+                g.shot('night_rain')
+        g.pb.button_release('right')
+        self.assertLessEqual(worst, 10)
+        self.assertEqual(g.u8('glow_on'), 1)
+
+
+class RomTestCGB(RomTest):
+    CGB = True
+
+
+if __name__ == '__main__':
+    unittest.main()

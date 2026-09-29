@@ -13,6 +13,18 @@ extern uint16_t cgb_bg[4][8][4], cgb_obj[4][8][4], title_pal_r[32];
 extern uint16_t pal_bg_buf[32], pal_obj_buf[32];
 extern volatile uint8_t pal_req, obp0_v, obp1_v;
 
+/* (d * t) >> 4 for d in -31..31, t in 0..16, without a multiply call */
+static int8_t mul_t(int8_t d, uint8_t t)
+{
+    int16_t r = 0, v = d;
+    if (t & 1) r += v;
+    if (t & 2) r += (int16_t)(v << 1);
+    if (t & 4) r += (int16_t)(v << 2);
+    if (t & 8) r += (int16_t)(v << 3);
+    if (t & 16) r += (int16_t)(v << 4);
+    return (int8_t)(r >> 4);
+}
+
 static uint8_t shade_lerp(uint8_t a, uint8_t b, uint8_t t)
 {
     /* per 2-bit entry: a + (b - a) * t / 16, rounded */
@@ -20,8 +32,8 @@ static uint8_t shade_lerp(uint8_t a, uint8_t b, uint8_t t)
     for (i = 0; i < 8; i += 2) {
         sa = (uint8_t)((a >> i) & 3);
         sb = (uint8_t)((b >> i) & 3);
-        if (sb >= sa) s = (uint8_t)(sa + (uint8_t)(((uint8_t)(sb - sa) * t + 8) >> 4));
-        else s = (uint8_t)(sa - (uint8_t)(((uint8_t)(sa - sb) * t + 8) >> 4));
+        if (sb >= sa) s = (uint8_t)(sa + (uint8_t)((uint8_t)(mul_t((int8_t)((sb - sa) << 2), t) + 2) >> 2));
+        else s = (uint8_t)(sa - (uint8_t)((uint8_t)(mul_t((int8_t)((sa - sb) << 2), t) + 2) >> 2));
         out |= (uint8_t)(s << i);
     }
     return out;
@@ -52,14 +64,13 @@ static uint8_t shade_post(uint8_t p, uint8_t band)
 
 static uint16_t lerp555(uint16_t a, uint16_t b, uint8_t t)
 {
-    int8_t ra, ga, ba, rb, gb, bb;
-    if (!t) return a;
+    uint8_t ra, ga, ba;
+    if (!t || a == b) return a;
     if (t >= 16) return b;
-    ra = (int8_t)(a & 31); ga = (int8_t)((a >> 5) & 31); ba = (int8_t)((a >> 10) & 31);
-    rb = (int8_t)(b & 31); gb = (int8_t)((b >> 5) & 31); bb = (int8_t)((b >> 10) & 31);
-    ra = (int8_t)(ra + (((int16_t)(rb - ra) * t) >> 4));
-    ga = (int8_t)(ga + (((int16_t)(gb - ga) * t) >> 4));
-    ba = (int8_t)(ba + (((int16_t)(bb - ba) * t) >> 4));
+    ra = (uint8_t)(a & 31); ga = (uint8_t)((a >> 5) & 31); ba = (uint8_t)((a >> 10) & 31);
+    ra = (uint8_t)(ra + mul_t((int8_t)((uint8_t)(b & 31) - ra), t));
+    ga = (uint8_t)(ga + mul_t((int8_t)((uint8_t)((b >> 5) & 31) - ga), t));
+    ba = (uint8_t)(ba + mul_t((int8_t)((uint8_t)((b >> 10) & 31) - ba), t));
     return (uint16_t)((uint16_t)ra | ((uint16_t)ga << 5) | ((uint16_t)ba << 10));
 }
 

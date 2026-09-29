@@ -37,6 +37,10 @@ uint16_t dbg_tx, dbg_ty;
 uint8_t dbg_max_line;
 uint8_t near_warm;
 uint16_t dbg_world_frames;
+uint8_t dbg_ly[10];
+uint8_t dbg_refills;
+uint16_t dbg_t[10], dbg_dmax[10];
+#define STAMP(i) do { uint8_t _l = LY_REG; dbg_ly[i] = _l; dbg_t[i] = (uint16_t)((uint16_t)vbl_frames * 154u + (_l >= 144 ? _l - 154 : _l)); } while (0)
 
 static uint8_t prev_keys;
 static uint16_t warm_acc;
@@ -210,15 +214,9 @@ static void ambient_update(void)
 
 static void scan_warm(void)
 {
-    int8_t dx, dy;
-    uint8_t m;
-    near_warm = 0;
-    for (dy = -3; dy <= 3; dy++)
-        for (dx = -3; dx <= 3; dx++) {
-            m = land_mt((uint16_t)(pl_mx + dx), (uint16_t)(pl_my + dy));
-            if (mt_flags[m] & MTF_WARM) { near_warm = 1; return; }
-        }
+    near_warm = land_scan_flag(MTF_WARM, 3);
 }
+
 
 static void warmth_tick(uint8_t tf)
 {
@@ -259,12 +257,13 @@ static void time_tick(void)
     if (tod >= DAY_FRAMES) { tod -= DAY_FRAMES; day_count++; }
     phase_update(0);
     tick8++;
-    if ((tick8 & 7) == 0) scan_warm();
-    if ((tick8 & 15) == 0) visit_mark();
-    if ((tick8 & 31) == 0) {
-        biome_here = world_biome(pl_mx, pl_my);
-        weather_update();
-        ambient_update();
+    /* spread the occasional work over different frames */
+    switch (tick8 & 31) {
+    case 3: case 11: case 19: case 27: scan_warm(); break;
+    case 7: case 23: visit_mark(); break;
+    case 15: biome_here = world_biome(pl_mx, pl_my); break;
+    case 16: weather_update(); break;
+    case 17: ambient_update(); break;
     }
     warmth_tick(tf);
 }
@@ -305,6 +304,7 @@ static uint16_t fresh_seed(void)
 /* Build the world view around the player: expects the screen faded to white. */
 void world_enter(uint8_t fresh) BANKED
 {
+    dbg_count_on = 0;
     (void)fresh;
     game_state = GS_WORLD;
     split_enable(0);
@@ -344,6 +344,7 @@ void world_enter(uint8_t fresh) BANKED
 
 static void whiteout(void)
 {
+    dbg_count_on = 0;
     game_state = GS_WHITEOUT;
     sfx_play(SFX_WHITEOUT);
     ambient_mode(AMB_SILENT);
@@ -381,6 +382,7 @@ static void carry_cairns(void)
 static void ending(void)
 {
     uint8_t i;
+    dbg_count_on = 0;
     game_state = GS_ENDING;
     ending_req = 0;
     pl_state = PL_SIT;
@@ -414,6 +416,10 @@ static void world_loop(void)
     uint8_t start_vbl, ly;
     for (;;) {
         frame_sync();
+        STAMP(0);
+        { uint8_t k; uint16_t d;
+          for (k = 0; k < 7; k++) { d = (uint16_t)(dbg_t[k + 1] - dbg_t[k]); if (d < 3000 && d > dbg_dmax[k]) dbg_dmax[k] = d; } }
+        dbg_count_on = 1;
         start_vbl = vbl_frames;
         input();
         dbg_world_frames++;
@@ -441,18 +447,25 @@ static void world_loop(void)
             map_screen();
             continue;
         }
+        STAMP(1);
         player_update();
+        STAMP(2);
         if (ending_req) { ending(); continue; }
         camera_update();
         time_tick();
+        STAMP(3);
         watchers_update();
         band_update();
+        STAMP(4);
         player_draw();
         fx_update();
+        STAMP(5);
         if (!warmth) { frame_commit(); whiteout(); continue; }
         frame_commit();
+        STAMP(6);
         /* stream with the rest of the frame (at least 2 cells, more while time remains) */
         if (land_update(cam_mx, cam_my, 2)) {
+            dbg_refills++;
             land_refill(cam_mx, cam_my);
         } else {
             for (;;) {
@@ -460,10 +473,12 @@ static void world_loop(void)
                 ly = LY_REG;
                 if (vbl_frames != start_vbl || (ly >= 112 && ly < 144)) break;
                 if (land_update(cam_mx, cam_my, 1)) break;
+
                 if (!land_job && (uint16_t)((uint16_t)(cam_mx - 2) - land_x0) == 0 &&
                     (uint16_t)((uint16_t)(cam_my - 3) - land_y0) == 0) break;
             }
         }
+        STAMP(7);
     }
 }
 
@@ -538,7 +553,7 @@ static uint8_t title(void)
 {
     uint8_t t = 0, have = save_exists();
     uint16_t seed = 0;
-    game_state = GS_TITLE;
+    game_state = GS_BOOT;
     split_enable(0);
     anim_on = 0;
     hide_sprites_from(0);
@@ -561,6 +576,7 @@ static uint8_t title(void)
         title_sprites(have, seed, t++);
         wait_frames(3);
     }
+    game_state = GS_TITLE;
     for (;;) {
         frame_sync();
         input();

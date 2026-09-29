@@ -31,6 +31,7 @@ static uint16_t act_x, act_y;         /* nearby interactable (fire, beacon, shri
 static uint8_t act_mt;
 static uint8_t hint_bob;
 uint8_t ending_req;
+extern uint8_t dbg_ly[10];
 
 uint8_t blocked_mt(uint8_t mt) BANKED
 {
@@ -40,18 +41,11 @@ uint8_t blocked_mt(uint8_t mt) BANKED
 /* metatile under foot + (ox, oy) pixels */
 static uint8_t mt_off(int8_t ox, int8_t oy)
 {
-    int16_t vx = (int16_t)pl_sx + ox, vy = (int16_t)pl_sy + oy;
-    return land_mt((uint16_t)(pl_mx + (vx >> 4)), (uint16_t)(pl_my + (vy >> 4)));
+    int8_t vx = (int8_t)(pl_sx + ox), vy = (int8_t)(pl_sy + oy);
+    return land_rel((int8_t)(vx >> 4), (int8_t)(vy >> 4));
 }
 
-static uint8_t box_free(int8_t ox, int8_t oy)
-{
-    if (blocked_mt(mt_off((int8_t)(ox + HB_L), (int8_t)(oy + HB_T)))) return 0;
-    if (blocked_mt(mt_off((int8_t)(ox + HB_R), (int8_t)(oy + HB_T)))) return 0;
-    if (blocked_mt(mt_off((int8_t)(ox + HB_L), (int8_t)(oy + HB_B)))) return 0;
-    if (blocked_mt(mt_off((int8_t)(ox + HB_R), (int8_t)(oy + HB_B)))) return 0;
-    return 1;
-}
+#define box_free(ox, oy) land_box_free((int8_t)(ox), (int8_t)(oy))
 
 static void foot_add(int8_t dx, int8_t dy)
 {
@@ -116,33 +110,41 @@ static void footstep(void)
 }
 
 /* ---- targets ---- */
+static uint16_t ft_mx, ft_my;
+static uint8_t ft_sx, ft_sy, ft_face = 0xFF, ft_age, ft_near = 0xFF;
 static void find_targets(void)
 {
     int8_t dx = dir_dx[pl_face], dy = dir_dy[pl_face];
-    int16_t vx, vy;
-    uint8_t i, m;
-    uint16_t cx, cy;
+    int8_t vx, vy;
+    uint8_t i, m, cell_moved;
+    cell_moved = (uint8_t)(ft_mx != pl_mx || ft_my != pl_my || land_changed || ++ft_age >= 32);
+    if (!cell_moved && ft_sx == pl_sx && ft_sy == pl_sy && ft_face == pl_face) return;
+    ft_sx = pl_sx; ft_sy = pl_sy; ft_face = pl_face;
     /* probe 7 px beyond the hitbox edge in the facing direction */
-    vx = (int16_t)pl_sx + (dx > 0 ? HB_R + 8 : dx < 0 ? HB_L - 8 : 0);
-    vy = (int16_t)pl_sy + (dy > 0 ? HB_B + 8 : dy < 0 ? HB_T - 8 : -3);
-    tgt_x = (uint16_t)(pl_mx + (vx >> 4));
-    tgt_y = (uint16_t)(pl_my + (vy >> 4));
-    tgt_mt = land_mt(tgt_x, tgt_y);
-    /* things you light or take respond from any neighbouring cell (facing one first) */
-    act_mt = 0xFF;
+    vx = (int8_t)(pl_sx + (dx > 0 ? HB_R + 8 : dx < 0 ? HB_L - 8 : 0));
+    vy = (int8_t)(pl_sy + (dy > 0 ? HB_B + 8 : dy < 0 ? HB_T - 8 : -3));
+    vx >>= 4;
+    vy >>= 4;
+    tgt_x = (uint16_t)(pl_mx + vx);
+    tgt_y = (uint16_t)(pl_my + vy);
+    tgt_mt = land_rel(vx, vy);
     m = tgt_mt;
     if (m == MT_FIRE_COLD || m == MT_BEACON || m == MT_SHRINE || m == MT_HEART) {
         act_x = tgt_x; act_y = tgt_y; act_mt = m;
+        ft_near = 0xFE;
         return;
     }
-    cx = pl_mx; cy = pl_my;
-    for (i = 0; i < 8; i++) {
-        uint16_t x = (uint16_t)(cx + dir_dx[i]), y = (uint16_t)(cy + dir_dy[i]);
-        m = land_mt(x, y);
-        if (m == MT_FIRE_COLD || m == MT_BEACON || m == MT_SHRINE || m == MT_HEART) {
-            act_x = x; act_y = y; act_mt = m;
-            return;
-        }
+    /* things you light or take respond from any neighbouring cell */
+    if (cell_moved || ft_near == 0xFE) {
+        ft_mx = pl_mx; ft_my = pl_my; ft_age = 0; land_changed = 0;
+        ft_near = land_near_act();
+    }
+    act_mt = 0xFF;
+    if (ft_near < 8) {
+        i = ft_near;
+        act_x = (uint16_t)(pl_mx + dir_dx[i]);
+        act_y = (uint16_t)(pl_my + dir_dy[i]);
+        act_mt = land_rel(dir_dx[i], dir_dy[i]);
     }
 }
 
@@ -215,7 +217,11 @@ void light_beacon(uint8_t i) BANKED;
 
 static void act(void)
 {
-    uint8_t m = tgt_mt, i;
+    uint8_t m, i;
+    ft_face = 0xFF;
+    ft_age = 32;
+    find_targets();
+    m = tgt_mt;
     if (act_mt != 0xFF) {
         switch (act_mt) {
         case MT_FIRE_COLD:
@@ -349,6 +355,7 @@ void player_update(void) BANKED
         hint_on = 0;
         return;
     }
+    dbg_ly[1] = LY_REG;
     if (keys & J_LEFT) dx = -1;
     if (keys & J_RIGHT) dx = 1;
     if (keys & J_UP) dy = -1;
@@ -400,7 +407,9 @@ void player_update(void) BANKED
         idle_t = 0;
     }
 
+    dbg_ly[2] = LY_REG;
     find_targets();
+    dbg_ly[3] = LY_REG;
     if (pressed & J_A) {
         if (pl_state == PL_SIT) { pl_state = PL_STAND; ambient_tempo(0); }
         act();
@@ -416,6 +425,7 @@ void player_update(void) BANKED
     }
 
     /* hint: bobbing pictogram above whatever A would act on */
+    dbg_ly[4] = LY_REG;
     hint_on = 0;
     if (pl_state != PL_SIT && can_act()) {
         uint16_t hx = act_mt != 0xFF ? act_x : tgt_x, hy = act_mt != 0xFF ? act_y : tgt_y;

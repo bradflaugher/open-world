@@ -16,6 +16,8 @@ uint16_t land_x0, land_y0;
 uint8_t land_cache[256];
 uint8_t land_job;
 uint16_t dbg_mt_calls;
+uint8_t land_changed;
+uint8_t dbg_hist[32];
 
 static uint8_t job_i;
 static uint16_t job_c;          /* world column (col jobs) or row (row jobs) being built */
@@ -40,6 +42,7 @@ void land_set(uint16_t mx, uint16_t my, uint8_t mt)
 {
     if (!land_in(mx, my)) return;
     land_cache[SLOT(mx, my)] = mt;
+    land_changed = 1;
     bq_push((uint8_t)(mx & 15), (uint8_t)(my & 15), mt);
     /* a job that already sampled this cell would commit a stale value: restart it */
     if (land_job) job_i = 0;
@@ -50,6 +53,7 @@ void land_refill(uint16_t cmx, uint16_t cmy)
     uint8_t i, j, m, c, *t, *a;
     uint16_t x, y;
     land_job = 0;
+    land_changed = 1;
     land_x0 = (uint16_t)(cmx - 2);
     land_y0 = (uint16_t)(cmy - 3);
     /* the queue may still hold writes for the old window */
@@ -101,6 +105,7 @@ static void job_commit(void)
             bq_push((uint8_t)(job_c & 15), (uint8_t)(v & 15), m);
         }
         if (land_job == 1) land_x0++; else land_x0--;
+        land_changed = 1;
     } else {
         for (i = 0; i < 15; i++) {
             v = (uint16_t)(land_x0 + i);
@@ -110,6 +115,7 @@ static void job_commit(void)
             bq_push((uint8_t)(v & 15), (uint8_t)(job_c & 15), m);
         }
         if (land_job == 3) land_y0++; else land_y0--;
+        land_changed = 1;
     }
     land_job = 0;
 }
@@ -135,8 +141,10 @@ uint8_t land_update(uint16_t cmx, uint16_t cmy, uint8_t budget)
             else job_start(dy > 0 ? 3 : 4);
         }
         while (budget && job_i < 15) {
+            { uint8_t l0 = LY_REG, dl, v0 = vbl_frames;
             if (land_job <= 2) job_buf[job_i] = world_mt(job_c, (uint16_t)(land_y0 + job_i));
             else job_buf[job_i] = world_mt((uint16_t)(land_x0 + job_i), job_c);
+            dl = (uint8_t)(LY_REG - l0); if (dl > 153) dl += 154; if (v0 == vbl_frames) dbg_hist[dl > 30 ? 30 : dl]++; else dbg_hist[31]++; }
             job_i++;
             budget--;
             dbg_mt_calls++;
@@ -149,4 +157,55 @@ uint8_t land_update(uint16_t cmx, uint16_t cmy, uint8_t budget)
         ady = dy < 0 ? -dy : dy;
     }
     return 0;
+}
+
+/* ---- fast helpers around the wanderer (always well inside the window: no range checks) ---- */
+#include "game.h"
+
+#define CELL(x8, y8) land_cache[(uint8_t)((((uint8_t)(y8)) & 15) << 4) | (((uint8_t)(x8)) & 15)]
+
+uint8_t land_rel(int8_t dx, int8_t dy)
+{
+    return CELL((uint8_t)pl_mx + dx, (uint8_t)pl_my + dy);
+}
+
+/* is the hitbox [x-5, x+4] x [y-5, y] free, with the foot moved by (ox, oy) pixels? */
+uint8_t land_box_free(int8_t ox, int8_t oy)
+{
+    int8_t vx = (int8_t)(pl_sx + ox), vy = (int8_t)(pl_sy + oy);
+    uint8_t x0 = (uint8_t)((uint8_t)pl_mx + (int8_t)((int8_t)(vx - 5) >> 4));
+    uint8_t x1 = (uint8_t)((uint8_t)pl_mx + (int8_t)((int8_t)(vx + 4) >> 4));
+    uint8_t y0 = (uint8_t)((uint8_t)pl_my + (int8_t)((int8_t)(vy - 5) >> 4));
+    uint8_t y1 = (uint8_t)((uint8_t)pl_my + (int8_t)(vy >> 4));
+    if (mt_flags[CELL(x0, y0)] & MTF_SOLID) return 0;
+    if (x1 != x0 && (mt_flags[CELL(x1, y0)] & MTF_SOLID)) return 0;
+    if (y1 != y0) {
+        if (mt_flags[CELL(x0, y1)] & MTF_SOLID) return 0;
+        if (x1 != x0 && (mt_flags[CELL(x1, y1)] & MTF_SOLID)) return 0;
+    }
+    return 1;
+}
+
+/* any metatile with `flag` within Chebyshev radius r of the wanderer's cell */
+uint8_t land_scan_flag(uint8_t flag, uint8_t r)
+{
+    uint8_t x, y, x0 = (uint8_t)((uint8_t)pl_mx - r), y0 = (uint8_t)((uint8_t)pl_my - r), n = (uint8_t)(r * 2 + 1), i, j;
+    for (j = 0, y = y0; j < n; j++, y++)
+        for (i = 0, x = x0; i < n; i++, x++)
+            if (mt_flags[CELL(x, y)] & flag) return 1;
+    return 0;
+}
+
+static const int8_t nb_dx[8] = { 0, 1, 1, 1, 0, -1, -1, -1 };
+static const int8_t nb_dy[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
+
+/* first neighbour (N, NE, ... NW) holding something A lights or takes; 0xFF if none */
+uint8_t land_near_act(void)
+{
+    uint8_t i, m, x = (uint8_t)pl_mx, y = (uint8_t)pl_my;
+    for (i = 0; i < 8; i++) {
+        m = CELL(x + nb_dx[i], y + nb_dy[i]);
+        if (m == MT_FIRE_COLD || m == MT_BEACON || m == MT_SHRINE || m == MT_HEART) return i;
+    }
+    return 0xFF;
 }

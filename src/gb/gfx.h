@@ -58,8 +58,9 @@ void wait_frames(uint8_t n);
 
 /* OAM helpers: sprites are built in oam[] and copied to shadow OAM by frame_commit */
 extern uint8_t oam[160];
-void spr_set(uint8_t i, uint8_t x, uint8_t y, uint8_t tile, uint8_t prop);
-void spr_hide(uint8_t i);
+void spr_set_f(uint8_t i, uint8_t x, uint8_t y, uint8_t tile, uint8_t prop);
+#define spr_set(i, x, y, t, p) do { uint8_t *_o = &oam[(uint8_t)(i) << 2]; _o[0] = (uint8_t)(y); _o[1] = (uint8_t)(x); _o[2] = (uint8_t)(t); _o[3] = (uint8_t)(p); } while (0)
+#define spr_hide(i) (oam[(uint8_t)(i) << 2] = 0)
 
 /* engine-generated sprite tiles after the art's (8x16 pairs) */
 #define SPR_SHADOW  126
