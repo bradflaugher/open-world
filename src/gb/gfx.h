@@ -48,6 +48,7 @@ void pal_tick(void) BANKED;                /* advance an incremental CGB palette
 void pal_apply(void) BANKED;                     /* compute palettes into nx_* / CGB buffers */
 void pal_title(void) BANKED;                     /* CGB: title palettes */
 void pal_upload_now(void);
+uint16_t pal_rom(uint8_t ph, uint8_t k);   /* colour k (0-31 BG, 32-63 OBJ) of phase ph from ROM */
 void pal_paper(const uint16_t *c4, uint8_t f) BANKED;
 uint8_t shade_fade(uint8_t p, uint8_t f) BANKED;  /* DMG palette p towards white (f 0..16) */
 

@@ -26,6 +26,7 @@ static uint8_t fog[16];
 /* chart inks: fog is paper (colour 0) with faint dots (1); pale land 1, land 2, sea 3 */
 static const uint8_t shade_col[4] = { 1, 2, 2, 3 };
 static uint8_t tbuf[16];
+uint8_t map_done;              /* the survey finished (tests) */
 #define line_n (scratch)         /* sprites per line (144 of the shared buffer) */
 
 static uint8_t map_xy(uint16_t mx, uint16_t my, uint8_t *sx, uint8_t *sy)
@@ -133,6 +134,7 @@ void map_screen(void) BANKED
     uint8_t i, r, tx, ty, px, py, done = 0, t = 0, dx, dy, k;
     uint8_t keys_old;
     dbg_count_on = 0;
+    map_done = 0;
     game_state = GS_MAP;
     sfx_play(SFX_MAP);
     ambient_mode(AMB_MAP);
@@ -176,7 +178,7 @@ void map_screen(void) BANKED
                 }
             }
             r++;
-            if (r > 16) done = 1;
+            if (r > 16) { done = 1; map_done = 1; }
         }
         t++;
         markers(t);

@@ -56,8 +56,15 @@ uint8_t pal_fog, pal_fade, pal_flash, pal_band_bright;
 #define ASSETS_OUT() SWITCH_ROM(_ab)
 
 uint8_t dmg_bg_r[4], dmg_o0_r[4], dmg_o1_r[4];
-uint16_t cgb_bg[4][8][4];            /* RAM copies: the art lives in a switchable bank */
-uint16_t cgb_obj[4][8][4];
+/* one CGB colour straight from the (banked) art: k = 0..31 BG, 32..63 OBJ (palette * 4 + c) */
+uint16_t pal_rom(uint8_t ph, uint8_t k)
+{
+    uint16_t v;
+    ASSETS_IN();
+    v = k < 32 ? cgb_bg_pal[ph][k >> 2][k & 3] : cgb_obj_pal[ph][(k >> 2) & 7][k & 3];
+    ASSETS_OUT();
+    return v;
+}
 uint16_t title_pal_r[32];
 uint16_t pal_bg_buf[32], pal_obj_buf[32];
 volatile uint8_t pal_req;            /* bit0: BG, bit1: OBJ (CGB) */
@@ -318,8 +325,6 @@ void gfx_init(void)
         memcpy(mt_a, mt_attr, sizeof mt_a);
         memcpy(edge_t, edge_tiles, EDGE_CLASS_COUNT * 4 * EDGE_VARIANT_COUNT);
         memcpy(anim_ram, anim_frames, sizeof anim_ram);
-        memcpy(cgb_bg, cgb_bg_pal, sizeof cgb_bg);
-        memcpy(cgb_obj, cgb_obj_pal, sizeof cgb_obj);
         memcpy(dmg_bg_r, dmg_bgp, 4);
         memcpy(dmg_o0_r, dmg_obp0, 4);
         memcpy(dmg_o1_r, dmg_obp1, 4);

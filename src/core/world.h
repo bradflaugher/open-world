@@ -165,7 +165,7 @@ extern const uint8_t w_biome_ground[B_COUNT];
 extern const uint8_t w_bitmask[8];
 extern uint8_t  w_le, w_lm, w_ls;         /* w_lattice outputs */
 /* block cache (see world.c) */
-#define W_BC_N 8
+#define W_BC_N 16
 extern uint16_t w_bcx[W_BC_N], w_bcy[W_BC_N];
 extern uint8_t  w_bcv[W_BC_N][2];
 extern uint8_t  w_bcm[W_BC_N][16];

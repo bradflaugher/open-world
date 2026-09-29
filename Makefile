@@ -79,6 +79,8 @@ test-assets:
 
 test-rom: $(ROM) $(BUILD)/owgen
 	$(PYTHON) -m unittest discover -s tests -p 'test_rom.py' -v
+	$(PYTHON) -m unittest discover -s tests -p 'test_core_rom.py' -v
+	$(PYTHON) -m unittest discover -s tests -p 'test_playthrough.py' -v
 
 screenshots: $(ROM) $(BUILD)/owgen
 	$(PYTHON) tools/screenshots.py

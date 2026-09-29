@@ -150,6 +150,7 @@ static uint8_t eq_apply(void)
     } else {
         world_mod_set(x, y, m);
     }
+    warm_dirty = 1;           /* warmth is read from the mods: look again now it is there */
     eq_tail = (uint8_t)((t + 1) & (EQ_N - 1));
     return 1;
 }

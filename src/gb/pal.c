@@ -10,7 +10,7 @@
 #include "sound.h"
 
 extern uint8_t dmg_bg_r[4], dmg_o0_r[4], dmg_o1_r[4];
-extern uint16_t cgb_bg[4][8][4], cgb_obj[4][8][4], title_pal_r[32];
+extern uint16_t title_pal_r[32];
 extern uint16_t pal_bg_buf[32], pal_obj_buf[32];
 extern volatile uint8_t pal_req, obp0_v, obp1_v;
 
@@ -80,19 +80,18 @@ static uint16_t lerp555(uint16_t a, uint16_t b, uint8_t t)
 /* colour k of 64 (0-31 BG, 32-63 OBJ) for the current phase blend, fog, band and fade */
 static uint16_t cgb_colour(uint8_t k)
 {
-    uint8_t p = (uint8_t)((k >> 2) & 7), c = (uint8_t)(k & 3);
-    uint16_t (*src)[8][4] = k < 32 ? cgb_bg : cgb_obj;
-    uint16_t v = lerp555(src[pal_phase_from][p][c], src[pal_phase_to][p][c], pal_t);
+    uint8_t p = (uint8_t)((k >> 2) & 7);
+    uint16_t v = pal_rom(pal_phase_from, k);
+    if (pal_phase_to != pal_phase_from) v = lerp555(v, pal_rom(pal_phase_to, k), pal_t);
     if (pal_fog) v = lerp555(v, FOG_COL, (uint8_t)(pal_fog + (pal_fog >> 1)));
     if (k < 32 && p == PAL_SKY && pal_band_bright) v = lerp555(v, 0x7FFF, pal_band_bright);
     if (pal_fade) v = lerp555(v, 0x7FFF, pal_fade);
     return v;
 }
 
-static void cgb_compute(uint16_t (*src)[8][4], uint16_t *dst, uint8_t band_pal)
+static void cgb_compute(uint8_t base, uint16_t *dst)
 {
-    uint8_t k, base = (uint8_t)(src == cgb_bg ? 0 : 32);
-    (void)band_pal;
+    uint8_t k;
     for (k = 0; k < 32; k++) dst[k] = cgb_colour((uint8_t)(base + k));
 }
 
@@ -135,8 +134,8 @@ void pal_apply(void) BANKED
         pal_job = 0xFF;
         pal_again = 0;
         if (LCDC_REG & LCDCF_ON) while (pal_req) { __asm__("halt"); __asm__("nop"); }
-        cgb_compute(cgb_bg, pal_bg_buf, PAL_SKY);
-        cgb_compute(cgb_obj, pal_obj_buf, 0xFF);
+        cgb_compute(0, pal_bg_buf);
+        cgb_compute(32, pal_obj_buf);
         pal_req = 3;
         if (!(LCDC_REG & LCDCF_ON)) pal_upload_now();
     }
@@ -156,7 +155,7 @@ void pal_title(void) BANKED
     if (!is_cgb) return;
     if (LCDC_REG & LCDCF_ON) while (pal_req) { __asm__("halt"); __asm__("nop"); }
     for (p = 0; p < 32; p++) pal_bg_buf[p] = lerp555(title_pal_r[p], 0x7FFF, pal_fade);
-    cgb_compute(cgb_obj, pal_obj_buf, 0xFF);
+    cgb_compute(32, pal_obj_buf);
     pal_req = 3;
     if (!(LCDC_REG & LCDCF_ON)) pal_upload_now();
 }
@@ -171,7 +170,7 @@ void pal_paper(const uint16_t *c4, uint8_t f) BANKED
     if (!is_cgb) return;
     if (LCDC_REG & LCDCF_ON) while (pal_req) { __asm__("halt"); __asm__("nop"); }
     for (p = 0; p < 32; p++) pal_bg_buf[p] = lerp555(c4[p & 3], 0x7FFF, f);
-    for (p = 0; p < 32; p++) pal_obj_buf[p] = lerp555(cgb_obj[PH_DAY][p >> 2][p & 3], 0x7FFF, f);
+    for (p = 0; p < 32; p++) pal_obj_buf[p] = lerp555(pal_rom(PH_DAY, (uint8_t)(32 + p)), 0x7FFF, f);
     pal_req = 3;
 }
 
