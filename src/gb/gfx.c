@@ -22,6 +22,9 @@ uint16_t dbg_vbl_count, dbg_nest;
 uint8_t dbg_nest_at[8];
 extern volatile uint8_t dbg_stage;
 uint8_t dbg_count_on;
+uint8_t dbg_pmax[16];
+uint16_t dbg_phist[17];
+uint8_t prof_t;
 uint8_t dbg_vbl_ly[2];
 
 volatile uint8_t split_mode;
@@ -46,6 +49,7 @@ uint8_t mt_a[MT_COUNT * 4];
 /* animated tiles */
 volatile uint8_t anim_on;
 volatile uint8_t hook_on, hook_busy;
+static volatile uint8_t sound_busy;
 static uint8_t anim_ram[ANIM_COUNT][ANIM_FRAMES][16];
 static uint8_t *anim_dst[ANIM_COUNT];
 
@@ -137,21 +141,28 @@ static void vbl_isr(void)
     if (is_cgb) VBK_REG = vbk;
     vbl_frames++;
     if (dbg_count_on) dbg_vbl_count++;
-    { uint8_t l = LY_REG; l = (uint8_t)(l >= 144 ? l - 144 : l + 10); if (l > dbg_vbl_ly[0]) dbg_vbl_ly[0] = l; }
+    prof_t = 0;
+    PSTAGE(PF_DRAIN);                /* from the start of the VBlank: absolute */
     __asm__("ei");
-    { uint8_t v0 = vbl_frames, l;
-      sound_tick();
-      l = LY_REG; l = (uint8_t)(l >= 144 ? l - 144 : l + 10);
-      if (v0 != vbl_frames) l = 255;
-      if (l > dbg_vbl_ly[1]) dbg_vbl_ly[1] = l; }
+    /* never re-enter the sound engine (a nested VBlank while an outer one is still in it) */
+    if (!sound_busy) {
+        sound_busy = 1;
+        sound_tick();
+        sound_busy = 0;
+    }
+    PSTAGE(PF_SOUND);
     /* the game frame runs here, so a slow world_mt in the main loop never costs a frame */
     if (hook_on) {
         if (hook_busy) {
             if (dbg_count_on) { dbg_frame_drops++; dbg_nest++; dbg_nest_at[dbg_stage & 7]++; }
         } else {
+            uint8_t v0 = vbl_frames, e;
             hook_busy = 1;
             world_frame();
             hook_busy = 0;
+            e = prof_t;
+            if (v0 != vbl_frames) e = 160;       /* ran into the next frame */
+            if (dbg_count_on) dbg_phist[e >= 160 ? 16 : e / 10]++;
         }
     }
 }

@@ -57,6 +57,18 @@ void gfx_load_world_tiles(void);          /* BG world tileset + sprite tiles (LC
 void gfx_load_title(void);                /* title BG tiles/map/attr + sprite tiles */
 void gfx_load_map(uint8_t first, uint8_t *fog);  /* map frame tiles at `first`, fog pattern out */
 void hide_sprites_from(uint8_t first);
+/* ---- frame-budget profiler (cheap: an LY read and a compare per stamp) ----
+   Lines are counted from the start of the VBlank (LY 144 = 0). dbg_pmax[k]: the longest
+   segment k seen; dbg_phist[b]: frames whose VBlank work (drain + sound + game frame) ended in
+   lines 10*b .. 10*b+9 (b = 16: ran into the next frame). */
+enum { PF_DRAIN, PF_SOUND, PF_INPUT, PF_PLAYER, PF_TIME, PF_WATCH, PF_BAND, PF_DRAW, PF_FX,
+       PF_COMMIT, PF_END, PF_COUNT };
+extern uint8_t dbg_pmax[16];
+extern uint16_t dbg_phist[17];
+extern uint8_t prof_t;
+#define PREL(l) ((uint8_t)((l) >= 144 ? (l) - 144 : (l) + 10))
+#define PSTAGE(k) do { uint8_t _l = LY_REG, _t = PREL(_l), _d = (uint8_t)(_t - prof_t); \
+                       if (_d > dbg_pmax[k]) dbg_pmax[k] = _d; prof_t = _t; } while (0)
 /* running late in the frame (skip optional work) */
 #define FRAME_LATE() (LY_REG >= 96 && LY_REG < 144)
 void fade_to(uint8_t target, uint8_t speed) BANKED; /* animate pal_fade (runs frames) */

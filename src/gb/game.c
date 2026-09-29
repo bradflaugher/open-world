@@ -606,24 +606,33 @@ void world_frame(void) BANKED
     rx = (int16_t)(((int16_t)(cam_mx - land_x0) << 4) + cam_sx);
     ry = (int16_t)(((int16_t)(cam_my - land_y0) << 4) + cam_sy);
     if (rx < 0 || rx > 88 || ry < 0 || ry > 128) { request(REQ_REFILL); return; }
+    PSTAGE(PF_INPUT);
     if (rx < 10 || rx > 62 || ry < 10 || ry > 102) dbg_stalls++;
     else player_update();
+    PSTAGE(PF_PLAYER);
     dbg_stage = 2;
     if (ending_req) { request(REQ_ENDING); return; }
     camera_update();
     time_tick();
+    PSTAGE(PF_TIME);
     dbg_stage = 3;
     if (watch_on || (vbl_frames & 15) == 4) watchers_update();   /* idle: roll every 16 frames (slot 4) */
+    PSTAGE(PF_WATCH);
     band_update();
+    PSTAGE(PF_BAND);
     dbg_stage = 4;
     player_draw();
+    PSTAGE(PF_DRAW);
     dbg_stage = 5;
     fx_update();
+    PSTAGE(PF_FX);
     dbg_stage = 6;
     frame_commit();
     dbg_stage = 7;
     if (!warmth) request(REQ_WHITEOUT);
-    { uint8_t l = LY_REG; l = (uint8_t)(l >= 144 ? l - 144 : l + 10); if (l > dbg_hook_ly) dbg_hook_ly = l; }
+    PSTAGE(PF_COMMIT);
+    if (prof_t > dbg_pmax[PF_END]) dbg_pmax[PF_END] = prof_t;
+    if (prof_t > dbg_hook_ly) dbg_hook_ly = prof_t;
 }
 
 static void world_run(void)
