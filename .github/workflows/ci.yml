@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GBDK_VERSION: "4.3.0"
+
+jobs:
+  test:
+    name: Build ROM + test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache GBDK-2020
+        id: gbdk-cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/gbdk
+          key: gbdk-${{ env.GBDK_VERSION }}-linux64
+
+      - name: Install GBDK-2020
+        if: steps.gbdk-cache.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o /tmp/gbdk.tar.gz \
+            "https://github.com/gbdk-2020/gbdk-2020/releases/download/${GBDK_VERSION}/gbdk-linux64.tar.gz"
+          sudo tar -xzf /tmp/gbdk.tar.gz -C /opt
+          /opt/gbdk/bin/lcc -v || true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install PyBoy (headless Game Boy emulator for ROM tests)
+        run: pip install pyboy pillow numpy
+
+      - name: Host unit tests (world core + sound engine)
+        run: make test-host
+
+      - name: Asset pipeline tests
+        run: make test-assets
+
+      - name: Build ROM
+        run: make rom
+
+      - name: Emulator tests (DMG + CGB, walks the world)
+        run: make test-rom
+
+      - name: Generator statistics
+        run: build/ibgen stats 50 60 | tail -n 5
+
+      - name: Upload ROM and screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-world-${{ github.sha }}
+          path: |
+            build/open-world.gb
+            build/open-world.sym
+            build/screens/*.png
+
+  release:
+    name: Release (date-stamped, latest only)
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: open-world-${{ github.sha }}
+          path: dist
+
+      - name: Publish release and prune all older ones
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="$(date -u +%Y.%m.%d)"
+          ROM="dist/open-world-${TAG}.gb"
+          cp dist/open-world.gb "$ROM"
+
+          # Only the latest release is kept: delete every existing release and its tag
+          # (including an earlier one from today, which this build replaces).
+          gh release list --limit 200 --json tagName --jq '.[].tagName' | while read -r old; do
+            echo "Deleting release $old"
+            gh release delete "$old" --yes --cleanup-tag
+          done
+          git push origin ":refs/tags/${TAG}" 2>/dev/null || true
+
+          cat > notes.md <<NOTES
+          **OPEN WORLD** build ${TAG} (commit ${GITHUB_SHA::7}).
+
+          Copy \`open-world-${TAG}.gb\` to your EverDrive SD card, see
+          [docs/EVERDRIVE.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_SHA}/docs/EVERDRIVE.md).
+          Runs on DMG, Pocket, Color, and GBC-compatible handhelds (colour + double speed on CGB).
+          NOTES
+
+          gh release create "$TAG" "$ROM" dist/open-world.sym \
+            --target "$GITHUB_SHA" \
+            --title "Open World ${TAG}" \
+            --notes-file notes.md \
+            --latest
