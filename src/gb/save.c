@@ -33,6 +33,7 @@ uint16_t dbg_save_len = SAVE_LEN;   /* tests: bytes per copy before the checksum
 
 uint8_t dbg_saves;
 static save_hdr_t hdr;
+static uint8_t hints_snap;          /* hints, taken with the header: both copies agree */
 
 /* checksum in isr.s (bank 0): a += byte, b += a */
 const uint8_t *cks_ptr;
@@ -69,7 +70,7 @@ static void write_copy(uint8_t *base, const uint8_t *cairn_snap)
     d = put(d, world_old_cairns, sizeof world_old_cairns);
     d = put(d, world_mods, sizeof world_mods);
     d = put(d, visited, sizeof visited);
-    *d++ = hints;
+    *d++ = hints_snap;
     c = cks(base, (uint16_t)SAVE_LEN);
     d[0] = (uint8_t)c;
     d[1] = (uint8_t)(c >> 8);
@@ -110,6 +111,7 @@ void save_write(void) BANKED
         hdr.cairn_n = cairn_n;
         hdr.old_n = world_old_cairn_count;
         hdr.mod_n = world_mod_count;
+        hints_snap = hints;
     }
     ENABLE_RAM;
     SWITCH_RAM(0);
