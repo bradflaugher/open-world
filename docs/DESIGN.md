@@ -93,15 +93,17 @@ own sky palettes (gradient rows via attributes).
 **Set pieces** override the noise:
 - **Beacons 0-2** are placed at bearings 0 / 120 / 240 degrees (plus seed jitter), 90-160
   metatiles from the start.
-- **The Heart** sits at 200-260 metatiles from the start.
+- **The Heart** sits at 450-600 metatiles from the start.
 - Each beacon has a **clear plateau** of radius 3 and a **gate ring** at radius 4-5:
   - Beacon 0: a ring of **brambles**. The lantern burns them. It holds the STONES shrine.
   - Beacon 1: a ring of **shallows** (an island). Stepping stones cross it. It holds the
     CLOAK shrine.
   - Beacon 2: a ring of **crags** (a plateau). The cloak glides over it.
-- **Causeways:** straight lines of road metatiles, 1 wide, from the start to each beacon's
-  gate and to the Heart. They override sea and rock, so every set piece is reachable (the
-  host tests prove it with a BFS).
+- **Causeways:** ancient roads, 1 wide, from the start to each beacon's gate and to the
+  Heart. They are fragmentary: road is forced wherever the line crosses sea, rock or trees
+  (bridges and passes, so every set piece is reachable; the host tests prove it with a BFS),
+  but on open land only about 30% of it shows. It is a buried road you find and follow. A
+  cold fire stands beside it every 64 metatiles.
 
 **Mods.** A small table of `(mx, my, metatile)` overrides holds world state: lit fires, lit
 beacons, taken shrines, placed cairns, stepping stones and burnt brambles. It is saved to
@@ -132,7 +134,7 @@ SRAM.
 
 ## 6. Time and weather
 
-- **Day length:** 12 real minutes. The phases are dawn, day, dusk and night.
+- **Day length:** 8 real minutes. The phases are dawn, day, dusk and night.
 - **DMG palette rule (the core of the art direction):** colour index 0 is reserved for
   **light**: fire, beacons, stars, water glints, lamp glow. The ground mostly uses index 1.
   The night BGP maps indices 1, 2 and 3 to near-black and keeps 0 bright. At night the land
@@ -154,8 +156,8 @@ sight. They are never explained.
 
 ## 8. Map (START)
 
-A 128x128-px map of 128x128 chunks (1 chunk = 8x8 metatiles) centred on the world origin, a
-1024x1024-metatile region. Only **visited chunks** are drawn, with biome shading. Everything
+A map at 1 px per chunk (1 chunk = 16x16 metatiles), covering about +/-1024 metatiles around
+the start. Only **visited chunks** are drawn, with biome shading. Everything
 else is fog. Beacons, the Heart (once revealed), cairns and the player are sprites. It renders
 progressively ("surveying"), with the LCD on.
 
