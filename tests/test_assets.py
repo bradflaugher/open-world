@@ -331,6 +331,12 @@ class TestAssets(unittest.TestCase):
             t = self.d['map_tiles'][self.define('MAP_T_SHADE%d' % k)][1]
             self.assertEqual(set(v for r in t for v in r), {k})
 
+    def test_banked(self):
+        self.assertIn('#pragma bank 255', self.c)
+        self.assertIn('BANKREF(assets)', self.c)
+        self.assertIn('BANKREF_EXTERN(assets)', self.h)
+        self.assertIn('SWITCH_ROM(BANK(assets))', self.h)
+
     # ---- SDCC -----------------------------------------------------------------------------
     def test_compiles_with_sdcc(self):
         lcc = os.path.join(os.environ.get('GBDK_HOME', '/opt/gbdk'), 'bin', 'lcc')

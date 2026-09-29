@@ -126,33 +126,14 @@ void map_screen(void) BANKED
     hide_sprites_from(0);
     wait_frames(1);
     /* tiles: frame set at 224, every map tile starts as fog */
-    set_bkg_data(MAP_T0, MAP_TILE_COUNT, map_tiles);
-    memcpy(fog, &map_tiles[MAP_T_FOG * 16], 16);
+    gfx_load_map(MAP_T0, fog);
     for (i = 0; i < MAP_COLS * MAP_ROWS; i++) set_bkg_data(i, 1, fog);
     frame_tiles();
     nx_scx = 0;
     nx_scy = 0;
-    if (is_cgb) {
-        uint16_t pal[32];
-        for (i = 0; i < 32; i++) pal[i] = paper_pal[i & 3];
-        set_bkg_palette(0, 8, pal);
-    }
     /* fade the paper in */
-    for (i = 16; i; i -= 4) {
-        pal_fade = (uint8_t)(i - 4);
-        pal_phase_from = pal_phase_to = PH_DAY;
-        pal_t = 16;
-        pal_fog = 0;
-        pal_apply();
-        nx_land_bgp = 0xE4;
-        if (pal_fade) nx_land_bgp = pal_fade >= 12 ? 0x00 : pal_fade >= 8 ? 0x40 : 0x90;
-        if (is_cgb) {
-            uint16_t pal[32];
-            uint8_t c;
-            for (c = 0; c < 32; c++) pal[c] = paper_pal[c & 3];
-            wait_frames(1);
-            set_bkg_palette(0, 8, pal);
-        }
+    for (i = 16; i; i -= 2) {
+        pal_paper(paper_pal, (uint8_t)(i - 2));
         markers(1);
         wait_frames(2);
     }
@@ -190,8 +171,11 @@ void map_screen(void) BANKED
         if (pressed & (J_START | J_B | J_A)) break;
     }
     sfx_play(SFX_MAP);
-    pal_fade = 0;
-    fade_to(16, 4);
+    for (i = 0; i <= 16; i += 2) {
+        pal_paper(paper_pal, i);
+        wait_frames(2);
+    }
+    pal_fade = 16;
     ambient_mode(AMB_WORLD);
     world_enter(0);
     keys = joypad();

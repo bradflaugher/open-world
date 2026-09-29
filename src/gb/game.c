@@ -544,21 +544,11 @@ static uint8_t title(void)
     hide_sprites_from(0);
     pal_fade = 16;
     pal_title();
-    nx_land_bgp = 0x00;
     wait_frames(2);
-    set_bkg_data(0, TITLE_TILE_COUNT, title_tiles);
-    set_tiles(0, 0, 20, 18, (uint8_t *)0x9800, title_map);
-    if (is_cgb) {
-        VBK_REG = 1;
-        set_tiles(0, 0, 20, 18, (uint8_t *)0x9800, title_attr);
-        VBK_REG = 0;
-    }
-    set_sprite_data(0, SPR_TILE_COUNT, spr_tiles);
+    gfx_load_title();
     if (have) {
         /* peek at the saved seed / worlds for the sigil and tallies */
-        uint16_t ps = world.seed;
         if (save_load()) seed = world.seed;
-        (void)ps;
     }
     title_sigil(seed);
     nx_scx = 0;
@@ -568,9 +558,6 @@ static uint8_t title(void)
     while (pal_fade) {
         pal_fade--;
         pal_title();
-        nx_land_bgp = shade_fade(0xE4, pal_fade);
-        nx_obp0 = dmg_obp0[PH_DAY];
-        nx_obp1 = dmg_obp1[PH_DAY];
         title_sprites(have, seed, t++);
         wait_frames(3);
     }
@@ -580,9 +567,16 @@ static uint8_t title(void)
         t++;
         title_sprites(have, seed, t);
         frame_commit();
-        if (pressed & (J_A | J_START)) return have ? 1 : 2;
-        if (pressed & J_SELECT) return 2;
+        if (pressed & (J_A | J_START | J_SELECT)) { sfx_play(SFX_SELECT); break; }
     }
+    /* fade the title out */
+    while (pal_fade < 16) {
+        pal_fade++;
+        pal_title();
+        wait_frames(2);
+    }
+    if (pressed & J_SELECT) return 2;
+    return have ? 1 : 2;
 }
 
 void game_main(void) BANKED
@@ -594,9 +588,6 @@ void game_main(void) BANKED
     DISPLAY_ON;
     for (;;) {
         choice = title();
-        sfx_play(SFX_SELECT);
-        pal_fade = 0;
-        fade_to(16, 1);
         if (choice == 1 && save_load()) {
             pl_state = PL_SLEEP;
             heart_revealed = (uint8_t)(beacons_lit == 7);

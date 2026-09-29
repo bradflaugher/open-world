@@ -93,7 +93,7 @@ MAP_REQUIRED = [
 
 # Put all asset data in a switchable ROM bank (autobank). The engine must then
 # SWITCH_ROM(BANK(assets)) before reading any asset array. Off = unbanked (the contract default).
-BANKED = False
+BANKED = True
 
 MAX_BG_TILES = 224
 MAX_SPR_TILES = 128
@@ -581,7 +581,10 @@ def gen(d, banked=None):
     H = [HEADER_TOP]
     A = H.append
     if banked:
-        A('/* All asset data lives in ROM bank BANK(assets): SWITCH_ROM(BANK(assets)) before use. */')
+        A('/* BANKED: every array in this file lives in the switchable ROM bank BANK(assets)')
+        A('   (autobanked). The engine must SWITCH_ROM(BANK(assets)) (and restore its own bank)')
+        A('   before reading any of them, or copy what it needs to WRAM first. The #defines are')
+        A('   plain constants and need no banking. */')
         A('#ifdef __SDCC')
         A('#include <gb/gb.h>')
         A('BANKREF_EXTERN(assets)')
@@ -653,19 +656,20 @@ def gen(d, banked=None):
     A('')
     dm = d['dmg']
     A('/* ---- palettes ---- */')
-    A('''/* DMG, indexed by PH_DAWN, PH_DAY, PH_DUSK, PH_NIGHT (sound.h). Shades: 0 white .. 3 black.
-     BGP  dawn  %02X: 0->0 1->1 2->1 3->3  pale ground, detail melts into it, shadows stand as
-                     silhouettes (contre-jour, morning haze)
-          day   %02X: identity
-          dusk  %02X: 0->0 1->2 2->2 3->3  the ground darkens, detail melts, lights start to shine
-          night %02X: 0->0 1->3 2->2 3->3  ground and shadow go black; detail (colour 2: rims of
-                     canopies, crags, stones, ripples) stays as faint dark grey, so the terrain is
-                     readable but only colour 0 (fire, beacons, stars, glints) is bright.
-     OBP0 (figures: player, band markers, icons, map markers)
-          day/dawn  1->0 2->2 3->3; dusk/night 1->0 2->1 3->3 (the cloak's rim lights up at night)
-     OBP1 (lights: warmth pips, glow, rain/snow, watchers, lit beacon, heart)
-          1->0 2->1 3->2 in every phase. */''' % (dm['dawn']['bgp'], dm['day']['bgp'],
-                                                 dm['dusk']['bgp'], dm['night']['bgp']))
+    def mapping(reg):
+        return ' '.join('%d->%d' % (i, (reg >> (2 * i)) & 3) for i in range(4))
+    A('/* DMG, indexed by PH_DAWN, PH_DAY, PH_DUSK, PH_NIGHT (sound.h). Colour index -> shade')
+    A('   (0 white .. 3 black); colour 0 (LIGHT) stays white in every phase:')
+    notes = {'dawn': 'haze: nothing black yet, the land lifted and soft',
+             'day': 'identity',
+             'dusk': 'detail hardens into black silhouette, the sea goes dark',
+             'night': 'ground one step above black (legible), forms black, only light shines'}
+    for nm in ('bgp', 'obp0', 'obp1'):
+        for ph in PHASES:
+            A('     %-4s %-5s 0x%02X  %s%s' % (nm.upper(), ph, dm[ph][nm], mapping(dm[ph][nm]),
+                                            ('   ' + notes[ph]) if nm == 'bgp' else ''))
+    A('   OBP0 = figures (player, band beacon/cairn, icons, map markers); OBP1 = lights')
+    A('   (warmth pips, lantern glow, rain/snow, Watchers, lit beacon, heart). */')
     A('extern const uint8_t dmg_bgp[4];')
     A('extern const uint8_t dmg_obp0[4], dmg_obp1[4];')
     A('/* CGB: 8 BG palette classes x 4 colours (RGB555) per phase. Colour 0 is always the light. */')

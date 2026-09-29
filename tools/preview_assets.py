@@ -120,6 +120,16 @@ def sheet_metatiles(data, pal):
     return img
 
 
+def sheet_anims(data, pal):
+    """each animated metatile in its 4 frames"""
+    names = [n for n in G.MT_ORDER if data['metas'][n]['anim']]
+    img = Image.new('RGB', (4 * 20 + 4, len(names) * 20 + 4), SHEET_BG)
+    for r, n in enumerate(names):
+        for f in range(4):
+            draw_mt(img, data, MT[n], 4 + f * 20, 4 + r * 20, pal, f)
+    return img
+
+
 # ---------------------------------------------------------------------------- landscapes
 
 def hsh(x, y, s=0):
@@ -422,6 +432,7 @@ def main(argv=None):
     for pal in all_pals(data):
         night = pal.phase == 'night'
         save(sheet_metatiles(data, pal), os.path.join(args.out, 'metatiles_%s.png' % pal.name), 4)
+        save(sheet_anims(data, pal), os.path.join(args.out, 'anims_%s.png' % pal.name), 4)
         save(sheet_biomes(data, pal), os.path.join(args.out, 'biomes_%s.png' % pal.name), 2)
         save(sheet_band(data, pal, night), os.path.join(args.out, 'band_%s.png' % pal.name), 3)
         save(sheet_sprites(data, pal), os.path.join(args.out, 'sprites_%s.png' % pal.name), 4)

@@ -46,7 +46,11 @@ static uint8_t *anim_dst[ANIM_COUNT];
 /* palettes */
 uint8_t pal_phase_from = PH_DAY, pal_phase_to = PH_DAY, pal_t = 16;
 uint8_t pal_fog, pal_fade, pal_flash, pal_band_bright;
-static uint16_t cgb_bg[4][8][4];     /* RAM copies (ROM data may be banked later) */
+#define ASSETS_IN()  uint8_t _ab = CURRENT_BANK; SWITCH_ROM(BANK(assets))
+#define ASSETS_OUT() SWITCH_ROM(_ab)
+
+static uint8_t dmg_bg_r[4], dmg_o0_r[4], dmg_o1_r[4];
+static uint16_t cgb_bg[4][8][4];     /* RAM copies: the art lives in a switchable bank */
 static uint16_t cgb_obj[4][8][4];
 static uint16_t pal_bg_buf[32], pal_obj_buf[32];
 static volatile uint8_t pal_req;     /* bit0: BG, bit1: OBJ (CGB) */
@@ -292,9 +296,9 @@ static void cgb_compute(uint16_t (*src)[8][4], uint16_t *dst, uint8_t band_pal)
 
 void pal_apply(void)
 {
-    uint8_t bgp = shade_lerp(dmg_bgp[pal_phase_from], dmg_bgp[pal_phase_to], pal_t);
-    uint8_t o0 = shade_lerp(dmg_obp0[pal_phase_from], dmg_obp0[pal_phase_to], pal_t);
-    uint8_t o1 = shade_lerp(dmg_obp1[pal_phase_from], dmg_obp1[pal_phase_to], pal_t);
+    uint8_t bgp = shade_lerp(dmg_bg_r[pal_phase_from], dmg_bg_r[pal_phase_to], pal_t);
+    uint8_t o0 = shade_lerp(dmg_o0_r[pal_phase_from], dmg_o0_r[pal_phase_to], pal_t);
+    uint8_t o1 = shade_lerp(dmg_o1_r[pal_phase_from], dmg_o1_r[pal_phase_to], pal_t);
     nx_land_bgp = shade_post(bgp, 0);
     nx_band_bgp = shade_post(bgp, 1);
     if (pal_flash) { o0 = 0; o1 = 0; }
@@ -318,13 +322,37 @@ void pal_apply(void)
 void pal_title(void)
 {
     uint8_t p, c;
+    nx_land_bgp = shade_lerp(0xE4, 0x00, pal_fade);
+    nx_obp0 = shade_lerp(dmg_o0_r[PH_DAY], 0x00, pal_fade);
+    nx_obp1 = shade_lerp(dmg_o1_r[PH_DAY], 0x00, pal_fade);
     if (!is_cgb) return;
     if (LCDC_REG & LCDCF_ON) while (pal_req) { __asm__("halt"); __asm__("nop"); }
-    for (p = 0; p < 8; p++)
-        for (c = 0; c < 4; c++)
-            pal_bg_buf[(p << 2) + c] = pal_fade ? lerp555(title_pal[p][c], 0x7FFF, pal_fade) : title_pal[p][c];
-    pal_req = 1;
+    {
+        ASSETS_IN();
+        for (p = 0; p < 8; p++)
+            for (c = 0; c < 4; c++)
+                pal_bg_buf[(p << 2) + c] = title_pal[p][c];
+        ASSETS_OUT();
+    }
+    for (p = 0; p < 32; p++) pal_bg_buf[p] = lerp555(pal_bg_buf[p], 0x7FFF, pal_fade);
+    cgb_compute(cgb_obj, pal_obj_buf, 0xFF);
+    for (p = 0; p < 32; p++) pal_obj_buf[p] = lerp555(pal_obj_buf[p], 0x7FFF, pal_fade);
+    pal_req = 3;
     if (!(LCDC_REG & LCDCF_ON)) pal_upload_now();
+}
+
+/* one 4-colour palette on every BG slot (the map's paper), towards white by f */
+void pal_paper(const uint16_t *c4, uint8_t f)
+{
+    uint8_t p;
+    nx_land_bgp = shade_lerp(0xE4, 0x00, f);
+    nx_obp0 = shade_lerp(dmg_o0_r[PH_DAY], 0x00, f);
+    nx_obp1 = shade_lerp(dmg_o1_r[PH_DAY], 0x00, f);
+    if (!is_cgb) return;
+    if (LCDC_REG & LCDCF_ON) while (pal_req) { __asm__("halt"); __asm__("nop"); }
+    for (p = 0; p < 32; p++) pal_bg_buf[p] = lerp555(c4[p & 3], 0x7FFF, f);
+    for (p = 0; p < 32; p++) pal_obj_buf[p] = lerp555(cgb_obj[PH_DAY][p >> 2][p & 3], 0x7FFF, f);
+    pal_req = 3;
 }
 
 void pal_upload_now(void)
@@ -346,10 +374,40 @@ void fade_to(uint8_t target, uint8_t speed)
 }
 
 /* ---- setup ---- */
+static const uint8_t shadow_tile[32] = {
+    0,0, 0,0, 0,0, 0,0, 0,0, 0,0, 0,0, 0,0,
+    0,0, 0,0, 0,0, 0x3C,0x3C, 0x7E,0x7E, 0x3C,0x3C, 0,0, 0,0
+};
+
 void gfx_load_world_tiles(void)
 {
+    ASSETS_IN();
     set_bkg_data(0, BG_TILE_COUNT, bg_tiles);
     set_sprite_data(0, SPR_TILE_COUNT, spr_tiles);
+    ASSETS_OUT();
+    set_sprite_data(SPR_SHADOW, 2, shadow_tile);
+}
+
+void gfx_load_title(void)
+{
+    ASSETS_IN();
+    set_bkg_data(0, TITLE_TILE_COUNT, title_tiles);
+    set_tiles(0, 0, 20, 18, (uint8_t *)0x9800, title_map);
+    if (is_cgb) {
+        VBK_REG = 1;
+        set_tiles(0, 0, 20, 18, (uint8_t *)0x9800, title_attr);
+        VBK_REG = 0;
+    }
+    set_sprite_data(0, SPR_TILE_COUNT, spr_tiles);
+    ASSETS_OUT();
+}
+
+void gfx_load_map(uint8_t first, uint8_t *fog)
+{
+    ASSETS_IN();
+    set_bkg_data(first, MAP_TILE_COUNT, map_tiles);
+    memcpy(fog, &map_tiles[MAP_T_FOG * 16], 16);
+    ASSETS_OUT();
 }
 
 void gfx_init(void)
@@ -359,14 +417,21 @@ void gfx_init(void)
     VBK_REG = 0;
     is_cgb = (uint8_t)(_cpu == CGB_TYPE && (VBK_REG & 0xFE) == 0xFE);
     if (is_cgb) cpu_fast();
-    memcpy(mt_t, mt_tiles, sizeof mt_t);
-    memcpy(mt_a, mt_attr, sizeof mt_a);
-    memcpy(anim_ram, anim_frames, sizeof anim_ram);
-    memcpy(cgb_bg, cgb_bg_pal, sizeof cgb_bg);
-    memcpy(cgb_obj, cgb_obj_pal, sizeof cgb_obj);
-    for (i = 0; i < ANIM_COUNT; i++) {
-        t = anim_tile[i];
-        anim_dst[i] = (uint8_t *)(t < 128 ? 0x9000u + ((uint16_t)t << 4) : 0x8800u + ((uint16_t)(t - 128) << 4));
+    {
+        ASSETS_IN();
+        memcpy(mt_t, mt_tiles, sizeof mt_t);
+        memcpy(mt_a, mt_attr, sizeof mt_a);
+        memcpy(anim_ram, anim_frames, sizeof anim_ram);
+        memcpy(cgb_bg, cgb_bg_pal, sizeof cgb_bg);
+        memcpy(cgb_obj, cgb_obj_pal, sizeof cgb_obj);
+        memcpy(dmg_bg_r, dmg_bgp, 4);
+        memcpy(dmg_o0_r, dmg_obp0, 4);
+        memcpy(dmg_o1_r, dmg_obp1, 4);
+        for (i = 0; i < ANIM_COUNT; i++) {
+            t = anim_tile[i];
+            anim_dst[i] = (uint8_t *)(t < 128 ? 0x9000u + ((uint16_t)t << 4) : 0x8800u + ((uint16_t)(t - 128) << 4));
+        }
+        ASSETS_OUT();
     }
     memset(oam, 0, sizeof oam);
     memset((void *)shadow_OAM, 0, 160);

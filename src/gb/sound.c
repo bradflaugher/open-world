@@ -123,19 +123,19 @@ static const uint8_t b_drone[B_COUNT][4] = {
     { P(0), P(0), P(6), P(0) },     /* D  G# (tritone) */
     { P(0), P(0), P(-4), P(-2) },   /* D  Bb C      */
 };
-static const uint8_t b_dlev[B_COUNT]  = { 2, 2, 2, 2, 2, 3, 2, 2, 2, 2 };
+static const uint8_t b_dlev[B_COUNT]  = { 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 };
 static const uint8_t b_pset[B_COUNT]  = { 1, 1, 1, 0, 0, 2, 2, 2, 2, 2 };
 static const uint8_t b_skip[B_COUNT]  = { 96, 88, 80, 72, 88, 100, 96, 72, 72, 128 };
-static const uint8_t b_vol[B_COUNT]   = { 6, 6, 6, 7, 7, 6, 5, 7, 6, 6 };
+static const uint8_t b_vol[B_COUNT]   = { 8, 8, 8, 9, 9, 8, 7, 9, 8, 8 };
 static const uint8_t b_pace[B_COUNT]  = { 7, 7, 7, 7, 6, 6, 5, 7, 7, 7 };
 static const uint8_t b_duty[B_COUNT]  = { 0x80, 0x80, 0x80, 0x80, 0x40, 0x40, 0x40, 0x80, 0x40, 0x80 };
 static const uint8_t b_det[B_COUNT]   = { 1, 1, 1, 1, 1, 1, 0, 1, 3, 1 };
 static const uint8_t b_slow[B_COUNT]  = { 4, 4, 3, 0, 1, 2, 2, 1, 2, 3 };
 /* wind: calm, gust, rise, fall, gust probability, calm colour, gust colour, flags */
 static const uint8_t b_wind[B_COUNT][8] = {
-    { 1, 4,  9, 16, 255, 0x66, 0x55, WF_WAVES },
-    { 1, 3,  8, 14, 255, 0x56, 0x45, WF_WAVES },
-    { 1, 4, 10, 18, 255, 0x66, 0x54, WF_WAVES },
+    { 1, 4, 22, 34, 255, 0x66, 0x55, WF_WAVES },
+    { 1, 3, 18, 28, 255, 0x56, 0x45, WF_WAVES },
+    { 1, 4, 24, 36, 255, 0x66, 0x54, WF_WAVES },
     { 1, 3, 14, 18,  90, 0x56, 0x45, 0 },
     { 1, 2, 12, 12, 120, 0x44, 0x34, 0 },
     { 1, 4, 16, 20, 110, 0x55, 0x35, 0 },
@@ -482,7 +482,7 @@ static void wind_frame(void)
         w_tgt = g;
         w_rate = wp_rise;
         w_frate = wp_fall;
-        w_tmr = 1;
+        w_tmr = (uint8_t)((wp_flags & WF_WAVES) ? 30 + (r & 63) : 1);   /* surf: rest between waves */
     } else if (wp_flags & WF_JITTER) {      /* rain: shimmering hiss */
         w_tgt = (uint8_t)(wp_calm + 1);
         w_rate = 2;

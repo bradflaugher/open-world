@@ -12,6 +12,16 @@
 #include <stdint.h>
 #include "world.h"            /* MT_COUNT */
 
+/* BANKED: every array in this file lives in the switchable ROM bank BANK(assets)
+   (autobanked). The engine must SWITCH_ROM(BANK(assets)) (and restore its own bank)
+   before reading any of them, or copy what it needs to WRAM first. The #defines are
+   plain constants and need no banking. */
+#ifdef __SDCC
+#include <gb/gb.h>
+BANKREF_EXTERN(assets)
+#endif
+#define ASSETS_BANKED 1
+
 /* ---- world BG tileset (load with set_bkg_data(0, BG_TILE_COUNT, bg_tiles)) ---- */
 #define BG_TILE_COUNT  166    /* <= 224 */
 extern const uint8_t bg_tiles[];              /* BG_TILE_COUNT * 16 bytes, 2bpp */
@@ -93,18 +103,22 @@ extern const uint8_t spr_tiles[];
 #define SPR_MAP_HEART        82
 
 /* ---- palettes ---- */
-/* DMG, indexed by PH_DAWN, PH_DAY, PH_DUSK, PH_NIGHT (sound.h). Shades: 0 white .. 3 black.
-     BGP  dawn  A4: 0->0 1->1 2->1 3->3  pale ground, detail melts into it, shadows stand as
-                     silhouettes (contre-jour, morning haze)
-          day   E4: identity
-          dusk  F4: 0->0 1->2 2->2 3->3  the ground darkens, detail melts, lights start to shine
-          night F8: 0->0 1->3 2->2 3->3  ground and shadow go black; detail (colour 2: rims of
-                     canopies, crags, stones, ripples) stays as faint dark grey, so the terrain is
-                     readable but only colour 0 (fire, beacons, stars, glints) is bright.
-     OBP0 (figures: player, band markers, icons, map markers)
-          day/dawn  1->0 2->2 3->3; dusk/night 1->0 2->1 3->3 (the cloak's rim lights up at night)
-     OBP1 (lights: warmth pips, glow, rain/snow, watchers, lit beacon, heart)
-          1->0 2->1 3->2 in every phase. */
+/* DMG, indexed by PH_DAWN, PH_DAY, PH_DUSK, PH_NIGHT (sound.h). Colour index -> shade
+   (0 white .. 3 black); colour 0 (LIGHT) stays white in every phase:
+     BGP  dawn  0xA4  0->0 1->1 2->2 3->2   haze: nothing black yet, the land lifted and soft
+     BGP  day   0xE4  0->0 1->1 2->2 3->3   identity
+     BGP  dusk  0xF4  0->0 1->1 2->3 3->3   detail hardens into black silhouette, the sea goes dark
+     BGP  night 0xF8  0->0 1->2 2->3 3->3   ground one step above black (legible), forms black, only light shines
+     OBP0 dawn  0xE0  0->0 1->0 2->2 3->3
+     OBP0 day   0xE0  0->0 1->0 2->2 3->3
+     OBP0 dusk  0xD0  0->0 1->0 2->1 3->3
+     OBP0 night 0xD0  0->0 1->0 2->1 3->3
+     OBP1 dawn  0x90  0->0 1->0 2->1 3->2
+     OBP1 day   0x90  0->0 1->0 2->1 3->2
+     OBP1 dusk  0x90  0->0 1->0 2->1 3->2
+     OBP1 night 0x90  0->0 1->0 2->1 3->2
+   OBP0 = figures (player, band beacon/cairn, icons, map markers); OBP1 = lights
+   (warmth pips, lantern glow, rain/snow, Watchers, lit beacon, heart). */
 extern const uint8_t dmg_bgp[4];
 extern const uint8_t dmg_obp0[4], dmg_obp1[4];
 /* CGB: 8 BG palette classes x 4 colours (RGB555) per phase. Colour 0 is always the light. */

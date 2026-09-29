@@ -14,6 +14,7 @@
  *  - Hot tables are const (ROM). The whole file is small; keep it in bank 0 if possible
  *    (it is not marked BANKED).
  */
+#include <string.h>
 #include "world.h"
 
 world_layout_t world;
@@ -237,19 +238,26 @@ static uint8_t point(uint16_t lx, uint16_t ly)
 }
 
 /* Block cache: the corners of 4 recent 4x4 blocks, direct-mapped by (bx ^ by) so that a
- * column or a row of blocks fits; plus the current block in plain globals (fast path). */
+ * column or a row of blocks fits; the current block is copied to cb[] (fixed addresses). */
 #define BC_N 4
 static uint16_t bcx[BC_N], bcy[BC_N];            /* block keys: mx & ~3, my & ~3 */
-static uint8_t bce[BC_N][4], bcm[BC_N][4], bcs[BC_N][4];
+static uint8_t bcd[BC_N][12];                     /* e0..e3, m0..m3, s0..s3 */
 static uint16_t ck_x, ck_y;                       /* current block key */
-static uint8_t ce0, ce1, ce2, ce3, cm0, cm1, cm2, cm3, cs_0, cs_1, cs_2, cs_3;
+static uint8_t cb[12];
+/* partial interpolations inside the current block, reused while the caller walks a column
+ * (same fx: horizontal-first) or a row (same fy: vertical-first) */
+static uint8_t hfx, vfy, lfy;
+static uint8_t hte, htm, hts, hbe, hbm, hbs;      /* top / bottom rows at fx = hfx */
+static uint8_t vle, vlm, vls, vre, vrm, vrs;      /* left / right columns at fy = vfy */
 
 static void corners_fill(uint16_t kx, uint16_t ky)
 {
     uint8_t j, i = (uint8_t)((((uint8_t)kx ^ (uint8_t)ky) >> 2) & (BC_N - 1));
+    uint8_t *d = bcd[i];
     uint16_t lx, ly, lx1, ly1;
     ck_x = kx;
     ck_y = ky;
+    hfx = vfy = 0xFF;
     if (bcx[i] != kx || bcy[i] != ky) {
         bcx[i] = kx;
         bcy[i] = ky;
@@ -257,56 +265,39 @@ static void corners_fill(uint16_t kx, uint16_t ky)
         ly = ky >> 2;
         lx1 = (uint16_t)(lx + 1);
         ly1 = (uint16_t)(ly + 1);
-        j = point(lx, ly);   bce[i][0] = pce[j]; bcm[i][0] = pcm[j]; bcs[i][0] = pcs[j];
-        j = point(lx1, ly);  bce[i][1] = pce[j]; bcm[i][1] = pcm[j]; bcs[i][1] = pcs[j];
-        j = point(lx, ly1);  bce[i][2] = pce[j]; bcm[i][2] = pcm[j]; bcs[i][2] = pcs[j];
-        j = point(lx1, ly1); bce[i][3] = pce[j]; bcm[i][3] = pcm[j]; bcs[i][3] = pcs[j];
+        j = point(lx, ly);   d[0] = pce[j]; d[4] = pcm[j]; d[8] = pcs[j];
+        j = point(lx1, ly);  d[1] = pce[j]; d[5] = pcm[j]; d[9] = pcs[j];
+        j = point(lx, ly1);  d[2] = pce[j]; d[6] = pcm[j]; d[10] = pcs[j];
+        j = point(lx1, ly1); d[3] = pce[j]; d[7] = pcm[j]; d[11] = pcs[j];
     }
-    ce0 = bce[i][0]; ce1 = bce[i][1]; ce2 = bce[i][2]; ce3 = bce[i][3];
-    cm0 = bcm[i][0]; cm1 = bcm[i][1]; cm2 = bcm[i][2]; cm3 = bcm[i][3];
-    cs_0 = bcs[i][0]; cs_1 = bcs[i][1]; cs_2 = bcs[i][2]; cs_3 = bcs[i][3];
+    memcpy(cb, d, 12);
 }
 
 /* fields at a metatile */
 static uint8_t fE, fM, fS;
 static void fields_at(uint16_t mx, uint16_t my)
 {
-    uint8_t te, tm, ts, be, bm, bs;
-    uint16_t kx = mx & 0xFFFC, ky = my & 0xFFFC;
-    if (kx != ck_x || ky != ck_y) corners_fill(kx, ky);
-    switch ((uint8_t)mx & 3) {
-    case 0:
-        te = ce0; tm = cm0; ts = cs_0; be = ce2; bm = cm2; bs = cs_2;
-        break;
-    case 1:
-        te = L1(ce0, ce1); tm = L1(cm0, cm1); ts = L1(cs_0, cs_1);
-        be = L1(ce2, ce3); bm = L1(cm2, cm3); bs = L1(cs_2, cs_3);
-        break;
-    case 2:
-        te = L2(ce0, ce1); tm = L2(cm0, cm1); ts = L2(cs_0, cs_1);
-        be = L2(ce2, ce3); bm = L2(cm2, cm3); bs = L2(cs_2, cs_3);
-        break;
-    default:
-        te = L1(ce1, ce0); tm = L1(cm1, cm0); ts = L1(cs_1, cs_0);
-        be = L1(ce3, ce2); bm = L1(cm3, cm2); bs = L1(cs_3, cs_2);
-        break;
+    uint8_t fx = (uint8_t)mx & 3, fy = (uint8_t)my & 3;
+    if ((mx & 0xFFFC) != ck_x || (my & 0xFFFC) != ck_y) corners_fill(mx & 0xFFFC, my & 0xFFFC);
+    if (fx == hfx) {
+        fE = lerp2(hte, hbe, fy); fM = lerp2(htm, hbm, fy); fS = lerp2(hts, hbs, fy);
+    } else if (fy == vfy) {
+        fE = lerp2(vle, vre, fx); fM = lerp2(vlm, vrm, fx); fS = lerp2(vls, vrs, fx);
+    } else if (fy == lfy) {   /* walking a row: interpolate vertically first */
+        vfy = fy;
+        vle = lerp2(cb[0], cb[2], fy); vre = lerp2(cb[1], cb[3], fy);
+        vlm = lerp2(cb[4], cb[6], fy); vrm = lerp2(cb[5], cb[7], fy);
+        vls = lerp2(cb[8], cb[10], fy); vrs = lerp2(cb[9], cb[11], fy);
+        fE = lerp2(vle, vre, fx); fM = lerp2(vlm, vrm, fx); fS = lerp2(vls, vrs, fx);
+    } else {
+        hfx = fx;
+        hte = lerp2(cb[0], cb[1], fx); hbe = lerp2(cb[2], cb[3], fx);
+        htm = lerp2(cb[4], cb[5], fx); hbm = lerp2(cb[6], cb[7], fx);
+        hts = lerp2(cb[8], cb[9], fx); hbs = lerp2(cb[10], cb[11], fx);
+        fE = lerp2(hte, hbe, fy); fM = lerp2(htm, hbm, fy); fS = lerp2(hts, hbs, fy);
     }
-    switch ((uint8_t)my & 3) {
-    case 0:
-        fE = te; fM = tm; fS = ts;
-        break;
-    case 1:
-        fE = L1(te, be); fM = L1(tm, bm); fS = L1(ts, bs);
-        break;
-    case 2:
-        fE = L2(te, be); fM = L2(tm, bm); fS = L2(ts, bs);
-        break;
-    default:
-        fE = L1(be, te); fM = L1(bm, tm); fS = L1(bs, ts);
-        break;
-    }
+    lfy = fy;
 }
-
 
 /* ---- biomes ------------------------------------------------------------------------------ */
 #define T_SEA      100   /* E below: deep sea */
@@ -717,7 +708,8 @@ natural:
 uint8_t world_mt_base(uint16_t mx, uint16_t my)
 {
     uint8_t t;
-    if (sp_ready) {
+    /* fast path: same 32x32 filter cell as last time and nothing there */
+    if (sp_ready && (spk_on || (mx & 0xFFE0) != spk_x || (my & 0xFFE0) != spk_y)) {
         t = set_piece(mx, my);
         if (t != 0xFF) return t;
     }
