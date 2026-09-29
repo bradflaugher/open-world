@@ -183,8 +183,7 @@ uint8_t world_detail(uint16_t mx, uint16_t my)
 uint8_t w_lf, w_ln;          /* w_lerpn: fraction and its number of bits */
 static uint8_t cfx, cfy;     /* cellf: the cell's position in its block */
 static uint8_t gfld[3];      /* cellf output: elevation, moisture, strangeness */
-static uint8_t gc[12];       /* corners of block (gc_x, gc_y): e0..3 m0..3 s0..3 (TL TR BL BR) */
-static uint16_t gc_x = 0xFFFF, gc_y = 0xFFFF;
+static uint8_t *gcp;         /* corners of the current block: e0..3 m0..3 s0..3 (TL TR BL BR) */
 #define ge gfld[0]
 #define gm gfld[1]
 #define gs gfld[2]
@@ -231,7 +230,10 @@ uint8_t w_lerpn(uint8_t a, uint8_t b) __naked
 static void cellf(void) __naked
 {
     __asm
-    ld  hl, #_gc
+    ld  hl, #_gcp
+    ld  a, (hl+)
+    ld  h, (hl)
+    ld  l, a
     call 8$
     ld  (_gfld+0), a
     call 8$
@@ -314,7 +316,7 @@ static uint8_t lerp2(uint8_t a, uint8_t b, uint8_t f)
 
 static void cellf(void)
 {
-    const uint8_t *c = gc;
+    const uint8_t *c = gcp;
     uint8_t i;
     for (i = 0; i < 3; i++, c += 4)
         gfld[i] = lerp2(lerp2(c[0], c[1], cfx), lerp2(c[2], c[3], cfx), cfy);
@@ -417,7 +419,6 @@ static uint8_t terrain(uint8_t b)
 uint16_t w_pq_x = 0xFFFF, w_pq_y = 0xFFFF;        /* current POI cell key (m & ~15) */
 uint8_t  w_pq_type, w_pq_px, w_pq_py, w_pq_ok, w_pq_ground, w_pq_axis;
 w_road_t w_roads[W_NUM_ROADS];
-uint8_t  w_road_x[W_ROAD_POOL];
 uint8_t  w_ready;
 uint8_t  w_start_ground;
 uint16_t w_spx0, w_spy0;
@@ -439,6 +440,10 @@ static uint8_t hfold(uint8_t v, uint8_t c)
 uint16_t w_bcx[W_BC_N], w_bcy[W_BC_N];
 uint8_t  w_bcm[W_BC_N][16];                       /* metatiles, index (fy << 2) | fx */
 uint8_t  w_bcv[W_BC_N][2];                        /* bit i: cell i computed */
+static uint8_t bcc[W_BC_N][12];                   /* corners of each block (once known) */
+static uint8_t bck[W_BC_N];                       /* block initialised: corners, bpm, bpn */
+static uint8_t bpm[W_BC_N];                       /* set pieces touching the block (W_SPM_*) */
+static uint8_t bpn[W_BC_N];                       /* the block's POI can reach into it */
 static uint8_t *ckm, *ckv;                        /* current block's metatiles / valid bits */
 static uint16_t ck_x = 0xFFFF, ck_y = 0xFFFF;     /* current block */
 static uint8_t ckslot;
@@ -470,9 +475,9 @@ void w_reset(void)
 }
 
 
-/* Lattice point cache: 32 entries, slot (lx + 5 ly) & 31 (a 5 x 6 window never collides).
+/* Lattice point cache: 16 entries, slot (lx + 5 ly) & 15.
  * Holds the corners of the cached blocks and the points computed ahead by world_prefetch. */
-#define LP_N 32
+#define LP_N 16
 static uint16_t lpx[LP_N], lpy[LP_N];
 static uint8_t lpv[LP_N][3];
 
@@ -486,7 +491,6 @@ static void lp_reset(void)
 {
     uint8_t i;
     for (i = 0; i < LP_N; i++) lpx[i] = 0xFFFF;
-    gc_x = gc_y = 0xFFFF;
 }
 
 /* lattice point (lx, ly) into d[0], d[4], d[8]; computes it if needed (0: cached, 1: computed) */
@@ -509,17 +513,17 @@ static uint8_t lp_get(uint16_t lx, uint16_t ly, uint8_t *d)
     return r;
 }
 
-/* lattice corners of the current block (ck_x, ck_y) into gc */
+/* lattice corners of the current block (ck_x, ck_y) into its slot */
+static void block_init(void);
 static void corners(void)
 {
     uint16_t lx = ck_x >> 2, ly = ck_y >> 2;
-    if (gc_x == ck_x && gc_y == ck_y) return;
-    gc_x = ck_x;
-    gc_y = ck_y;
-    lp_get(lx, ly, gc);
-    lp_get((uint16_t)(lx + 1), ly, gc + 1);
-    lp_get(lx, (uint16_t)(ly + 1), gc + 2);
-    lp_get((uint16_t)(lx + 1), (uint16_t)(ly + 1), gc + 3);
+    if (bck[ckslot]) return;
+    block_init();
+    lp_get(lx, ly, gcp);
+    lp_get((uint16_t)(lx + 1), ly, gcp + 1);
+    lp_get(lx, (uint16_t)(ly + 1), gcp + 2);
+    lp_get((uint16_t)(lx + 1), (uint16_t)(ly + 1), gcp + 3);
 }
 
 static uint8_t pf_tmp[12];
@@ -545,12 +549,14 @@ static void block_get(uint16_t kx, uint16_t ky)
     ck_y = ky;
     ckslot = s;
     ckm = w_bcm[s];
+    gcp = bcc[s];
     ckv = w_bcv[s];
     if (w_bcx[s] != kx || w_bcy[s] != ky) {
         W_OP(W_OP_BLOCK);
         w_bcx[s] = kx;
         w_bcy[s] = ky;
         ckv[0] = ckv[1] = 0;
+        bck[s] = 0;
     }
 }
 
@@ -572,7 +578,7 @@ static uint8_t poi_cell(uint8_t lx, uint8_t ly, uint8_t b)
             /* the POI is on a lattice point: a corner of this block */
             w_pq_ok = 1;
             i = (uint8_t)((lx < w_pq_px ? 1 : 0) | (ly < w_pq_py ? 2 : 0));
-            c = gc + i;
+            c = gcp + i;
             i = w_classify(c[0], c[4], c[8]);
             w_pq_ground = w_biome_ground[i];
             if (i <= B_SHORE || i == B_ROCK || c[0] < T_SHORE + 6) w_pq_type = W_POI_NONE;
@@ -623,6 +629,37 @@ static uint8_t mod_find(uint16_t mx, uint16_t my)
     return W_MOD_NONE;
 }
 
+static void poi_roll(uint16_t kx, uint16_t ky);
+/* per-block data, once per block: which set pieces and whether the POI can touch it */
+static void block_init(void)
+{
+    uint8_t m = 0, bx, by;
+    bck[ckslot] = 1;
+    /* set pieces: coarse mask per 128x128 cell, refined for the block by the banked test */
+    if (w_ready) {
+        if ((ck_x & 0xFF80) != spk_x || (ck_y & 0xFF80) != spk_y) {
+            uint16_t cx = (uint16_t)(ck_x - w_spx0), cy = (uint16_t)(ck_y - w_spy0);
+            spk_x = ck_x & 0xFF80;
+            spk_y = ck_y & 0xFF80;
+            spk_on = 0;
+            if (cx < 1024 && cy < 1024)
+                spk_on = w_sp_mask[(uint8_t)(((uint8_t)(cy >> 7) << 3) | (uint8_t)(cx >> 7))];
+        }
+        if (spk_on) m = w_block_mask(ck_x, ck_y, spk_on);
+    }
+    bpm[ckslot] = m;
+    /* the POI of the block's 16x16 cell */
+    if ((ck_x & 0xFFF0) != w_pq_x || (ck_y & 0xFFF0) != w_pq_y) poi_roll(ck_x & 0xFFF0, ck_y & 0xFFF0);
+    m = 0;
+    bx = (uint8_t)ck_x & 15;
+    by = (uint8_t)ck_y & 15;
+    if (w_pq_type == W_POI_ROAD)
+        m = (uint8_t)(w_pq_px - bx) < 4 || (uint8_t)(w_pq_py - by) < 4;
+    else if (w_pq_type != W_POI_NONE)
+        m = (uint8_t)(w_pq_px + 2 - bx) < 8 && (uint8_t)(w_pq_py + 2 - by) < 8;
+    bpn[ckslot] = m;
+}
+
 /* compute one cell of the current block (without mods) */
 static uint8_t cell(uint16_t mx, uint16_t my)
 {
@@ -634,20 +671,10 @@ static uint8_t cell(uint16_t mx, uint16_t my)
     cellf();
     w_salt = SALT_D;
     gd = w_hash(mx, my);
-    /* set pieces: coarse filter per 64x64 cell, then the banked per-cell test */
-    if (w_ready) {
-        if ((mx & 0xFF80) != spk_x || (my & 0xFF80) != spk_y) {
-            uint16_t cx = (uint16_t)(mx - w_spx0), cy = (uint16_t)(my - w_spy0);
-            spk_x = mx & 0xFF80;
-            spk_y = my & 0xFF80;
-            spk_on = 0;
-            if (cx < 1024 && cy < 1024)
-                spk_on = w_sp_mask[(uint8_t)(((uint8_t)(cy >> 7) << 3) | (uint8_t)(cx >> 7))];
-        }
-        if (spk_on) {
-            p = w_piece(mx, my, spk_on);
-            if (p != W_SP_NONE && p != W_SP_CLEAR) return p;
-        }
+    /* set pieces */
+    if (bpm[ckslot]) {
+        p = w_piece(mx, my, bpm[ckslot]);
+        if (p != W_SP_NONE && p != W_SP_CLEAR) return p;
     }
     /* classify */
     b = w_classify_base(ge, gm);
@@ -657,8 +684,10 @@ static uint8_t cell(uint16_t mx, uint16_t my)
     }
     /* the POI of this 16x16 cell */
     t = 0xFF;
-    if ((mx & 0xFFF0) != w_pq_x || (my & 0xFFF0) != w_pq_y) poi_roll(mx & 0xFFF0, my & 0xFFF0);
-    if (w_pq_type != W_POI_NONE) t = poi_cell((uint8_t)mx & 15, (uint8_t)my & 15, b);
+    if (bpn[ckslot]) {
+        if ((mx & 0xFFF0) != w_pq_x || (my & 0xFFF0) != w_pq_y) poi_roll(mx & 0xFFF0, my & 0xFFF0);
+        if (w_pq_type != W_POI_NONE) t = poi_cell((uint8_t)mx & 15, (uint8_t)my & 15, b);
+    }
     if (t == 0xFF) {
         if (b == B_RUINS) {
             t = w_classify_base(ge, gm);
@@ -675,22 +704,105 @@ static uint8_t cell(uint16_t mx, uint16_t my)
     return t;
 }
 
-uint8_t world_mt(uint16_t mx, uint16_t my)
+/* slow path: another block, a cell not computed yet, or the mods changed */
+uint8_t world_mt_slow(uint16_t mx, uint16_t my);
+uint8_t world_mt_slow(uint16_t mx, uint16_t my)
 {
     uint8_t i, t, *v, m;
-    W_OP(W_OP_MT);
     if ((mx & 0xFFFC) != ck_x || (my & 0xFFFC) != ck_y || w_mods_seen != world_mod_count)
         block_get(mx & 0xFFFC, my & 0xFFFC);
     i = (uint8_t)((((uint8_t)my & 3) << 2) | ((uint8_t)mx & 3));
     v = ckv + (i >> 3);
     m = w_bitmask[i & 7];
-    if (*v & m) { W_OP(W_OP_HIT); return ckm[i]; }
+    if (*v & m) return ckm[i];
     t = world_mod_count ? mod_find(mx, my) : W_MOD_NONE;
     t = t != W_MOD_NONE ? world_mods[t].mt : cell(mx, my);
     ckm[i] = t;
     *v |= m;
     return t;
 }
+
+#ifdef __SDCC
+/* fast path in assembly (~80 M-cycles): a computed cell of the current block.
+ * sdcccall(1): mx in DE, my in BC, result in A; falls through to world_mt_slow otherwise. */
+uint8_t world_mt(uint16_t mx, uint16_t my) __naked
+{
+    (void)mx; (void)my;
+    __asm
+    ld  a, e
+    and a, #0xFC
+    ld  hl, #_ck_x
+    cp  a, (hl)
+    jr  nz, 9$
+    inc hl
+    ld  a, d
+    cp  a, (hl)
+    jr  nz, 9$
+    ld  a, c
+    and a, #0xFC
+    ld  hl, #_ck_y
+    cp  a, (hl)
+    jr  nz, 9$
+    inc hl
+    ld  a, b
+    cp  a, (hl)
+    jr  nz, 9$
+    ld  a, (_w_mods_seen)
+    ld  hl, #_world_mod_count
+    cp  a, (hl)
+    jr  nz, 9$
+    ld  a, c
+    and a, #3
+    add a, a
+    add a, a
+    ld  l, a
+    ld  a, e
+    and a, #3
+    or  a, l
+    ld  h, a
+    and a, #7
+    ld  l, a
+    ld  a, #1
+    inc l
+    jr  2$
+1$:
+    add a, a
+2$:
+    dec l
+    jr  nz, 1$
+    ld  l, a
+    push de
+    ld  a, (_ckv)
+    ld  e, a
+    ld  a, (_ckv + 1)
+    ld  d, a
+    bit 3, h
+    jr  z, 3$
+    inc de
+3$:
+    ld  a, (de)
+    pop de
+    and a, l
+    jr  z, 9$
+    ld  a, (_ckm)
+    add a, h
+    ld  l, a
+    ld  a, (_ckm + 1)
+    adc a, #0
+    ld  h, a
+    ld  a, (hl)
+    ret
+9$:
+    jp  _world_mt_slow
+    __endasm;
+}
+#else
+uint8_t world_mt(uint16_t mx, uint16_t my)
+{
+    W_OP(W_OP_MT);
+    return world_mt_slow(mx, my);
+}
+#endif
 
 /* generated metatile, ignoring mods */
 uint8_t world_mt_base(uint16_t mx, uint16_t my)
@@ -708,6 +820,6 @@ uint8_t world_biome(uint16_t mx, uint16_t my)
     if ((mx & 0xFFFC) != ck_x || (my & 0xFFFC) != ck_y || w_mods_seen != world_mod_count)
         block_get(mx & 0xFFFC, my & 0xFFFC);
     corners();
-    c = gc + i;
+    c = gcp + i;
     return w_classify(c[0], c[4], c[8]);
 }

@@ -255,3 +255,24 @@ int8_t land_slide_y(int8_t sy)
     if (b1 && !b0) return -1;
     return 0;
 }
+
+/* Idle time: warm the core's caches for the cells the scroll will need next, a few metatiles
+   beyond the window edge in direction (dx, dy). One world_prefetch call per invocation;
+   returns 0 when everything ahead is ready. Main loop only (the core is not re-entrant). */
+uint8_t land_prefetch(int8_t dx, int8_t dy)
+{
+    static const uint8_t along[3] = { 0, 7, 14 };
+    uint8_t i;
+    uint16_t x, y;
+    if (dx) {
+        x = dx > 0 ? (uint16_t)(land_x0 + 15 + 3) : (uint16_t)(land_x0 - 4);
+        for (i = 0; i < 3; i++)
+            if (world_prefetch(x, (uint16_t)(land_y0 + along[i]))) return 1;
+    }
+    if (dy) {
+        y = dy > 0 ? (uint16_t)(land_y0 + 15 + 3) : (uint16_t)(land_y0 - 4);
+        for (i = 0; i < 3; i++)
+            if (world_prefetch((uint16_t)(land_x0 + along[i]), y)) return 1;
+    }
+    return 0;
+}

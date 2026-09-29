@@ -35,7 +35,7 @@ uint16_t dbg_seed;
 uint8_t dbg_teleport;
 uint16_t dbg_tx, dbg_ty;
 uint8_t dbg_max_line;
-uint8_t near_warm;
+uint8_t near_warm, warm_dirty;
 uint16_t dbg_world_frames;
 uint8_t dbg_ly[10];
 uint8_t dbg_refills;
@@ -122,6 +122,7 @@ void edit_mt(uint16_t mx, uint16_t my, uint8_t mt) BANKED
 {
     if (!edit_room() || !eq_push(mx, my, mt)) { sfx_play(SFX_NO); return; }
     land_set(mx, my, mt);
+    warm_dirty = 1;
 }
 
 void edit_remove(uint16_t mx, uint16_t my) BANKED
@@ -309,9 +310,18 @@ static void ambient_update(void)
     }
 }
 
+static uint16_t warm_mx = 0xFFFF, warm_my;
 static void scan_warm(void)
 {
     near_warm = land_scan_flag(MTF_WARM, 3);
+    warm_mx = pl_mx;
+    warm_my = pl_my;
+}
+
+/* rescan only when the wanderer changes cell or the land changed (a fire was lit) */
+static void scan_warm_maybe(void)
+{
+    if (pl_mx != warm_mx || pl_my != warm_my || warm_dirty) { warm_dirty = 0; scan_warm(); }
 }
 
 
@@ -357,7 +367,7 @@ static void time_tick(void)
     tick8 = vbl_frames;
     switch (tick8 & 7) {
     case 0: TM_B(); phase_update(0); TM_E(0); break;
-    case 2: case 6: TM_B(); scan_warm(); TM_E(1); break;
+    case 2: case 6: TM_B(); scan_warm_maybe(); TM_E(1); break;
     case 3: if (tick8 & 8) { TM_B(); visit_mark(); TM_E(2); } break;
     case 5:
         switch ((tick8 >> 3) & 3) {
@@ -560,7 +570,7 @@ void world_frame(void) BANKED
     camera_update();
     time_tick();
     STAMP(2);
-    watchers_update();
+    if (watch_on || !(vbl_frames & 15)) watchers_update();   /* idle: roll every 16 frames */
     band_update();
     STAMP(3);
     player_draw();
@@ -587,7 +597,12 @@ static void world_run(void)
             if (save_req) { save_req = 0; save_write(); continue; }
             __critical { cx = cam_mx; cy = cam_my; }
             r = land_update(cx, cy, 1);
-            if (r == 2) { __asm__("halt"); __asm__("nop"); }
+            if (r == 2) {
+                static const int8_t fdx[8] = { 0, 1, 1, 1, 0, -1, -1, -1 };
+                static const int8_t fdy[8] = { -1, -1, 0, 1, 1, 1, 0, -1 };
+                uint8_t f = pl_face & 7;
+                if (!land_prefetch(fdx[f], fdy[f])) { __asm__("halt"); __asm__("nop"); }
+            }
             else if (r == 1) request(REQ_REFILL);
         }
         while (hook_busy) { __asm__("halt"); __asm__("nop"); }

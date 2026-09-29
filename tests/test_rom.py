@@ -614,6 +614,26 @@ class RomTest(Base):
         self.assertNotEqual(g.world()['seed'], self.SEED)
         self.assertEqual(g.u8('beacons_lit'), 0)
 
+    def test_watcher_drifts_and_touch_whites_out(self):
+        g = self.g
+        g.new_world(self.SEED)
+        w = g.world()
+        g.teleport(*self.open_ground(w['start']))
+        g.set_time(T_NIGHT + 1100)
+        g.run(20)
+        mx, my, sx, sy = g.pos()
+        g.set_u16('watch_mx', mx + 2)
+        g.set_u16('watch_my', my)
+        g.set_u8('watch_sx', sx)
+        g.set_u8('watch_sy', sy)
+        g.set_u8('watch_on', 1)
+        g.run(80)
+        g.shot('watcher')
+        self.assertEqual(g.u8('watch_on'), 1)
+        d1 = (g.u16('watch_mx') - mx) * 16 + g.u8('watch_sx') - sx
+        self.assertLess(d1, 32, 'the Watcher did not drift towards the light')
+        self.assertTrue(g.wait(lambda: g.state() == GS_WHITEOUT, 900), 'its touch did not white out')
+
     def test_no_frame_drops_walking(self):
         g = self.g
         g.new_world(self.SEED)

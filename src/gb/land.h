@@ -28,6 +28,7 @@ uint8_t land_rel(int8_t dx, int8_t dy);
 uint8_t land_box_free(int8_t ox, int8_t oy);
 uint8_t land_scan_flag(uint8_t flag, uint8_t r);
 uint8_t land_near_act(void);
+uint8_t land_prefetch(int8_t dx, int8_t dy);   /* idle: warm the core ahead (main loop) */
 int8_t land_slide_x(int8_t sx);  /* corner nudge in y when blocked along x (0 none) */
 int8_t land_slide_y(int8_t sy);   /* neighbour dir (0..7) with a fire/beacon/shrine/heart, or 0xFF */
 

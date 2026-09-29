@@ -76,24 +76,35 @@ static uint8_t dist2(uint8_t ux, uint8_t uy, uint8_t c)
     return (uint8_t)(a + b);
 }
 
+/* major offset of breakpoint k (0..n+1): round(k * dmaj / (n + 1)) via the 8.8 step q, with two
+ * 8x8 multiplies (exact and identical on SDCC and gcc) */
+static uint8_t road_x(const w_road_t *r, uint8_t k)
+{
+    uint16_t a, b;
+    if (k > r->n) return r->dmaj;
+    a = (uint16_t)((uint16_t)k * (uint8_t)(r->q >> 8));
+    b = (uint16_t)((uint16_t)k * (uint8_t)r->q);
+    b = (uint16_t)(b + 128);
+    return (uint8_t)(a + (b >> 8));
+}
+
 static uint8_t on_road(const w_road_t *r, uint16_t mx, uint16_t my)
 {
     uint16_t maj, mn, t;
     uint8_t k, o;
-    const uint8_t *X;
     if (r->flags & W_R_YMAJOR) { maj = my; mn = mx; } else { maj = mx; mn = my; }
     t = (r->flags & W_R_MINNEG) ? (uint16_t)(r->a_min - mn) : (uint16_t)(mn - r->a_min);
     if (t > r->dmin) return 0;
     maj = (r->flags & W_R_MAJNEG) ? (uint16_t)(r->a_maj - maj) : (uint16_t)(maj - r->a_maj);
     if (maj > 255) return 0;
     o = (uint8_t)maj;
-    X = &w_road_x[r->x0];
     if ((uint8_t)t == r->dmin) k = r->n;
     else {
         k = (uint8_t)((uint8_t)t >> r->shift);
-        if ((uint8_t)t & (uint8_t)((1u << r->shift) - 1)) return o == X[k + 1];
+        if ((uint8_t)t & (uint8_t)((1u << r->shift) - 1)) return o == road_x(r, (uint8_t)(k + 1));
     }
-    return o >= X[k] && o <= X[k + 1];
+    if (o < road_x(r, k)) return 0;
+    return o <= road_x(r, (uint8_t)(k + 1));
 }
 
 /* set piece at one cell, or W_SP_NONE / W_SP_CLEAR */
@@ -143,6 +154,62 @@ static uint8_t piece(uint16_t mx, uint16_t my, uint8_t mask)
     uy = box_off(my, world.start.y, 3);
     if (ux != 0xFF && uy != 0xFF && dist2(ux, uy, 3) <= 10) return W_SP_CLEAR;
     return W_SP_NONE;
+}
+
+/* does the 4x4 block at (kx, ky) touch the box of radius rad around c? */
+static uint8_t box_hit(uint16_t kx, uint16_t ky, const wpos_t *c, uint8_t rad)
+{
+    uint16_t d;
+    d = (uint16_t)(c->x - kx);
+    d = (uint16_t)(d + rad);
+    if (d > (uint16_t)(rad + rad + 3)) return 0;
+    d = (uint16_t)(c->y - ky);
+    d = (uint16_t)(d + rad);
+    return d <= (uint16_t)(rad + rad + 3);
+}
+
+/* can road r pass through the 4x4 block at (kx, ky)? (conservative) */
+static uint8_t road_hits_block(const w_road_t *r, uint16_t kx, uint16_t ky)
+{
+    uint16_t maj, mn, t0, t1, o0;
+    uint8_t k0, k1, a, b;
+    if (r->flags & W_R_YMAJOR) { maj = ky; mn = kx; } else { maj = kx; mn = ky; }
+    /* minor range of the block, as road parameter t */
+    if (r->flags & W_R_MINNEG) {
+        t0 = (uint16_t)(r->a_min - (uint16_t)(mn + 3));
+        t1 = (uint16_t)(r->a_min - mn);
+    } else {
+        t0 = (uint16_t)(mn - r->a_min);
+        t1 = (uint16_t)(t0 + 3);
+    }
+    if ((int16_t)t1 < 0 || (int16_t)t0 > (int16_t)r->dmin) return 0;
+    if ((int16_t)t0 < 0) t0 = 0;
+    if (t1 > r->dmin) t1 = r->dmin;
+    k0 = (uint8_t)((uint8_t)t0 >> r->shift);
+    k1 = (uint8_t)((uint8_t)t1 >> r->shift);
+    if ((uint8_t)t1 == r->dmin) k1 = r->n;
+    a = road_x(r, k0);
+    b = road_x(r, (uint8_t)(k1 + 1));
+    /* major range of the block, as offset o from a_maj */
+    if (r->flags & W_R_MAJNEG) o0 = (uint16_t)(r->a_maj - (uint16_t)(maj + 3));
+    else o0 = (uint16_t)(maj - r->a_maj);
+    if ((int16_t)o0 < -3) return 0;
+    if ((int16_t)o0 > (int16_t)b) return 0;
+    return (int16_t)(o0 + 3) >= (int16_t)a;
+}
+
+uint8_t w_block_mask(uint16_t kx, uint16_t ky, uint8_t mask) WBANKED
+{
+    uint8_t i, m = 0;
+    for (i = 0; i < NUM_BEACONS; i++)
+        if ((mask & (uint8_t)(W_SPM_BEACON0 << i)) && box_hit(kx, ky, &world.beacon[i], 6))
+            m |= (uint8_t)(W_SPM_BEACON0 << i);
+    if ((mask & W_SPM_OTHER) && (box_hit(kx, ky, &world.heart, 4) || box_hit(kx, ky, &world.start, 3)))
+        m |= W_SPM_OTHER;
+    for (i = 0; i < W_NUM_ROADS; i++)
+        if ((mask & (uint8_t)(W_SPM_ROAD0 << i)) && road_hits_block(&w_roads[i], kx, ky))
+            m |= (uint8_t)(W_SPM_ROAD0 << i);
+    return m;
 }
 
 uint8_t w_piece(uint16_t mx, uint16_t my, uint8_t mask) WBANKED
@@ -214,19 +281,21 @@ uint8_t w_old_cairn(uint16_t mx, uint16_t my) WBANKED
 #define HV(a) ((uint8_t)((uint8_t)(a) >> 1))
 #define QV(a) ((uint8_t)((uint8_t)(a) >> 2))
 
-/* One cached lattice cell per octave (plain globals: SDCC handles them much better than
- * struct pointers), with its rows interpolated at the last fx: a walk down a column of lattice
- * points reuses them. Always horizontal first: the rounding makes the order matter, and the
- * result must not depend on the cache state. */
-static uint16_t kc_x, kc_y, km_x, km_y, ke_x, ke_y;
-static uint8_t cc0, cc1, cc2, cc3, cs0, cs1, cs2, cs3;   /* continents, strangeness (64 grid) */
-static uint8_t cm0, cm1, cm2, cm3, ce0, ce1, ce2, ce3;   /* moisture (32), elevation (16) */
-static uint8_t hc_f, hc_t, hc_b, hs_t, hs_b, hm_f, hm_t, hm_b, he_f, he_t, he_b;
+/* Two cached lattice cells per octave, slot (kx ^ ky) & 1 (so horizontally or vertically
+ * adjacent cells never evict each other), each with its rows interpolated at the last fx.
+ * Always horizontal first: the rounding makes the order matter, and results must not depend
+ * on the cache state. */
+typedef struct {
+    uint16_t kx[2], ky[2];       /* cell keys (0xFFFF: none) */
+    uint8_t c[2][4];             /* corner hashes TL TR BL BR */
+    uint8_t hf[2], ht[2], hb[2]; /* fx of the cached rows, and the rows */
+} oct_t;
+static oct_t o_c, o_s, o_m, o_e;   /* continents 64, strangeness 64, moisture 32, elevation 16 */
 
 void w_lattice_reset(void) WBANKED
 {
-    kc_x = km_x = ke_x = 0xFFFF;
-    kc_y = km_y = ke_y = 0xFFFF;
+    o_c.kx[0] = o_c.kx[1] = o_s.kx[0] = o_s.kx[1] = 0xFFFF;
+    o_m.kx[0] = o_m.kx[1] = o_e.kx[0] = o_e.kx[1] = 0xFFFF;
 }
 
 /* inner three rounds of w_hash (shared by all salts) */
@@ -237,77 +306,74 @@ static uint8_t hash3(uint16_t x, uint16_t y)
     return (uint8_t)(w_perm[(uint8_t)(h ^ (uint8_t)(x >> 8) ^ w_s1)] ^ (uint8_t)(y >> 8));
 }
 
+static uint8_t oj;   /* slot of the octave cell being evaluated */
+
+/* find / fill the cell (kx, ky) of octave o; returns 1 if it had to be filled */
+static uint8_t oct_find(oct_t *o, uint16_t kx, uint16_t ky)
+{
+    oj = (uint8_t)(((uint8_t)kx ^ (uint8_t)ky) & 1);
+    if (o->kx[oj] == kx && o->ky[oj] == ky) return 0;
+    o->kx[oj] = kx;
+    o->ky[oj] = ky;
+    o->hf[oj] = 0xFF;
+    return 1;
+}
+
+static void oct_fill(oct_t *o, uint16_t kx, uint16_t ky, uint8_t salt)
+{
+    uint8_t *c = o->c[oj];
+    w_salt = salt;
+    c[0] = w_hash(kx, ky);
+    c[1] = w_hash((uint16_t)(kx + 1), ky);
+    ky++;
+    c[2] = w_hash(kx, ky);
+    c[3] = w_hash((uint16_t)(kx + 1), ky);
+}
+
+static uint8_t oct_val(oct_t *o, uint8_t fx, uint8_t fy, uint8_t n)
+{
+    uint8_t j = oj;
+    const uint8_t *c = o->c[j];
+    w_ln = n;
+    if (fx != o->hf[j]) {
+        o->hf[j] = fx;
+        w_lf = fx;
+        o->ht[j] = w_lerpn(c[0], c[1]);
+        o->hb[j] = w_lerpn(c[2], c[3]);
+    }
+    w_lf = fy;
+    return w_lerpn(o->ht[j], o->hb[j]);
+}
+
 /* Field values at a 4-metatile lattice point (lx, ly) = (mx >> 2, my >> 2):
  * elevation = continents (64 grid) / 2 + elevation (16 grid) * 3/8 + detail (4 grid) / 8,
  * moisture (32 grid), strangeness (64 grid); value noise, bilinear. */
 void w_lattice(uint16_t lx, uint16_t ly) WBANKED
 {
-    uint8_t c, k, f, xl = (uint8_t)lx, yl = (uint8_t)ly;
-    W_OP(W_OP_LATTICE);
+    uint8_t c, k, xl = (uint8_t)lx, yl = (uint8_t)ly, *pc, *ps;
     uint16_t kx = lx >> 4, ky = ly >> 4;
-    if (kx != kc_x || ky != kc_y) {
-        kc_x = kx;
-        kc_y = ky;
-        hc_f = 0xFF;
-        c = hash3(kx, ky);                     cc0 = w_perm[c ^ SALT_C]; cs0 = w_perm[c ^ SALT_S];
-        c = hash3((uint16_t)(kx + 1), ky);     cc1 = w_perm[c ^ SALT_C]; cs1 = w_perm[c ^ SALT_S];
-        ky++;
-        c = hash3(kx, ky);                     cc2 = w_perm[c ^ SALT_C]; cs2 = w_perm[c ^ SALT_S];
-        c = hash3((uint16_t)(kx + 1), ky);     cc3 = w_perm[c ^ SALT_C]; cs3 = w_perm[c ^ SALT_S];
+    W_OP(W_OP_LATTICE);
+    if (oct_find(&o_c, kx, ky)) {
+        oct_find(&o_s, kx, ky);
+        o_s.kx[oj] = kx;
+        pc = o_c.c[oj];
+        ps = o_s.c[oj];
+        c = hash3(kx, ky);                     pc[0] = w_perm[c ^ SALT_C]; ps[0] = w_perm[c ^ SALT_S];
+        c = hash3((uint16_t)(kx + 1), ky);     pc[1] = w_perm[c ^ SALT_C]; ps[1] = w_perm[c ^ SALT_S];
+        c = hash3(kx, (uint16_t)(ky + 1));     pc[2] = w_perm[c ^ SALT_C]; ps[2] = w_perm[c ^ SALT_S];
+        c = hash3((uint16_t)(kx + 1), (uint16_t)(ky + 1)); pc[3] = w_perm[c ^ SALT_C]; ps[3] = w_perm[c ^ SALT_S];
     }
-    w_ln = 4;
-    f = xl & 15;
-    if (f != hc_f) {
-        hc_f = f;
-        w_lf = f;
-        hc_t = w_lerpn(cc0, cc1); hc_b = w_lerpn(cc2, cc3);
-        hs_t = w_lerpn(cs0, cs1); hs_b = w_lerpn(cs2, cs3);
-    }
-    w_lf = yl & 15;
-    k = w_lerpn(hc_t, hc_b);
-    w_ls = w_lerpn(hs_t, hs_b);
-
+    k = oct_val(&o_c, xl & 15, yl & 15, 4);
+    oct_find(&o_s, kx, ky);   /* same slot, already filled */
+    w_ls = oct_val(&o_s, xl & 15, yl & 15, 4);
     kx = lx >> 3;
     ky = ly >> 3;
-    if (kx != km_x || ky != km_y) {
-        km_x = kx;
-        km_y = ky;
-        hm_f = 0xFF;
-        w_salt = SALT_M;
-        cm0 = w_hash(kx, ky); cm1 = w_hash((uint16_t)(kx + 1), ky);
-        ky++;
-        cm2 = w_hash(kx, ky); cm3 = w_hash((uint16_t)(kx + 1), ky);
-    }
-    w_ln = 3;
-    f = xl & 7;
-    if (f != hm_f) {
-        hm_f = f;
-        w_lf = f;
-        hm_t = w_lerpn(cm0, cm1); hm_b = w_lerpn(cm2, cm3);
-    }
-    w_lf = yl & 7;
-    w_lm = w_lerpn(hm_t, hm_b);
-
+    if (oct_find(&o_m, kx, ky)) oct_fill(&o_m, kx, ky, SALT_M);
+    w_lm = oct_val(&o_m, xl & 7, yl & 7, 3);
     kx = lx >> 2;
     ky = ly >> 2;
-    if (kx != ke_x || ky != ke_y) {
-        ke_x = kx;
-        ke_y = ky;
-        he_f = 0xFF;
-        w_salt = SALT_E;
-        ce0 = w_hash(kx, ky); ce1 = w_hash((uint16_t)(kx + 1), ky);
-        ky++;
-        ce2 = w_hash(kx, ky); ce3 = w_hash((uint16_t)(kx + 1), ky);
-    }
-    w_ln = 2;
-    f = xl & 3;
-    if (f != he_f) {
-        he_f = f;
-        w_lf = f;
-        he_t = w_lerpn(ce0, ce1); he_b = w_lerpn(ce2, ce3);
-    }
-    w_lf = yl & 3;
-    c = w_lerpn(he_t, he_b);
+    if (oct_find(&o_e, kx, ky)) oct_fill(&o_e, kx, ky, SALT_E);
+    c = oct_val(&o_e, xl & 3, yl & 3, 2);
     k = (uint8_t)(HV(k) + QV(c) + (c >> 3));
     w_salt = SALT_F;
     w_le = (uint8_t)(k + (w_hash(lx, ly) >> 3));
@@ -438,15 +504,13 @@ static void polar(wpos_t *p, uint8_t bearing, uint16_t dist)
 }
 
 /* A causeway from a to b: a stair of runs along the major axis joined by legs of 1 << shift
- * metatiles along the minor axis (both deltas must be <= 255). Returns 0 if the breakpoint pool
- * is full. */
-static uint8_t pool;
+ * metatiles along the minor axis (both deltas must be <= 255). Step 4 (shift 2) normally, 8 for
+ * steep long roads (at most 40 steps). */
 static uint8_t road_build(w_road_t *r, const wpos_t *a, const wpos_t *b)
 {
     int16_t dx = (int16_t)(b->x - a->x), dy = (int16_t)(b->y - a->y);
     uint16_t adx = uabs16(dx), ady = uabs16(dy), dmaj, dmn;
-    uint8_t k, n, sh;
-    uint8_t *X;
+    uint8_t n, sh;
     r->flags = 0;
     if (ady > adx) {
         r->flags |= W_R_YMAJOR;
@@ -462,17 +526,12 @@ static uint8_t road_build(w_road_t *r, const wpos_t *a, const wpos_t *b)
     r->dmin = (uint8_t)dmn;
     for (sh = 2;; sh++) {
         n = (uint8_t)((dmn + (1u << sh) - 1) >> sh);
-        if ((uint16_t)pool + n + 2 <= W_ROAD_POOL) break;
-        if (sh == 5) return 0;
+        if (n <= 40) break;
     }
     r->shift = sh;
     r->n = n;
-    r->x0 = pool;
-    X = &w_road_x[pool];
-    pool = (uint8_t)(pool + n + 2);
-    X[0] = 0;
-    for (k = 1; k <= n; k++) X[k] = (uint8_t)(((uint16_t)dmaj * k + ((n + 1u) >> 1)) / (n + 1u));
-    X[n + 1] = (uint8_t)dmaj;
+    r->dmaj = (uint8_t)dmaj;
+    r->q = (uint16_t)(((uint16_t)dmaj << 8) / (n + 1u));   /* major advance per step, 8.8 */
     /* bounding box */
     if (a->x < b->x) { r->bx = a->x; r->bw = (uint16_t)(b->x - a->x); }
     else { r->bx = b->x; r->bw = (uint16_t)(a->x - b->x); }
@@ -485,18 +544,17 @@ static uint8_t road_build(w_road_t *r, const wpos_t *a, const wpos_t *b)
 static uint16_t gx0, gy0, gx1, gy1;
 static void road_seg(const w_road_t *r, uint8_t k, uint8_t leg)
 {
-    const uint8_t *X = &w_road_x[r->x0];
     uint16_t m0, m1, n0, n1, t;
     t = k == r->n ? r->dmin : (uint16_t)((uint16_t)k << r->shift);
     n0 = (r->flags & W_R_MINNEG) ? (uint16_t)(r->a_min - t) : (uint16_t)(r->a_min + t);
     if (leg) {
         t = (uint8_t)(k + 1) == r->n ? r->dmin : (uint16_t)((uint16_t)(k + 1) << r->shift);
         n1 = (r->flags & W_R_MINNEG) ? (uint16_t)(r->a_min - t) : (uint16_t)(r->a_min + t);
-        m0 = m1 = X[k + 1];
+        m0 = m1 = road_x(r, (uint8_t)(k + 1));
     } else {
         n1 = n0;
-        m0 = X[k];
-        m1 = X[k + 1];
+        m0 = road_x(r, k);
+        m1 = road_x(r, (uint8_t)(k + 1));
     }
     if (r->flags & W_R_MAJNEG) { t = (uint16_t)(r->a_maj - m1); m1 = (uint16_t)(r->a_maj - m0); m0 = t; }
     else { m0 = (uint16_t)(r->a_maj + m0); m1 = (uint16_t)(r->a_maj + m1); }
@@ -631,7 +689,6 @@ void world_init(uint16_t seed) WBANKED
         hdist = (uint16_t)(200 + (rnd() & 31));
         hdist = (uint16_t)(hdist + (rnd() & 15));
         polar(&world.heart, hb, hdist);
-        pool = 0;
         /* roads: start -> the gate point of each beacon (6 out along the road's major axis) */
         for (i = 0; i < NUM_BEACONS; i++) {
             int16_t dx = (int16_t)(world.beacon[i].x - world.start.x);

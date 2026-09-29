@@ -136,7 +136,6 @@ uint16_t world_dist(uint16_t ax, uint16_t ay, uint16_t bx, uint16_t by) WBANKED;
 #ifdef WORLD_INTERNAL
 /* ---- shared between world.c (hot, bank 0) and world_gen.c (cold, banked); not engine API ---- */
 #define W_NUM_ROADS (NUM_BEACONS + 1)
-#define W_ROAD_POOL 104                   /* breakpoint bytes shared by all roads */
 typedef struct {
     uint16_t a_maj, a_min;                /* start point, (major, minor) axis */
     uint16_t bx, by, bw, bh;              /* bounding box: x in [bx, bx+bw], y in [by, by+bh] */
@@ -144,13 +143,13 @@ typedef struct {
     uint8_t flags;                        /* W_R_* */
     uint8_t n;                            /* number of minor steps */
     uint8_t shift;                        /* minor step = 1 << shift metatiles */
-    uint8_t x0;                           /* first breakpoint in w_road_x[] (n + 2 entries) */
+    uint8_t dmaj;                         /* |major delta| */
+    uint16_t q;                           /* major advance per minor step, 8.8 fixed point */
 } w_road_t;
 #define W_R_YMAJOR 1                      /* major axis is y */
 #define W_R_MAJNEG 2                      /* major coordinate decreases along the road */
 #define W_R_MINNEG 4                      /* minor coordinate decreases along the road */
 extern w_road_t w_roads[W_NUM_ROADS];
-extern uint8_t  w_road_x[W_ROAD_POOL];    /* |major - a_maj| of each breakpoint */
 extern uint8_t  w_s0, w_s1, w_salt;       /* seed bytes mixed into every hash; salt of the next */
 extern uint8_t  w_ready;                  /* set pieces valid */
 extern uint8_t  w_start_ground;
@@ -194,6 +193,7 @@ uint8_t w_poi_mt(uint8_t ax, uint8_t ay, uint8_t d) WBANKED; /* POI tile at |off
 #define W_SP_NONE  0xFF                   /* w_piece: no set piece here */
 #define W_SP_CLEAR 0xFE                   /* w_piece: start clearing (base unless solid) */
 uint8_t w_piece(uint16_t mx, uint16_t my, uint8_t mask) WBANKED;
+uint8_t w_block_mask(uint16_t kx, uint16_t ky, uint8_t mask) WBANKED; /* pieces touching a 4x4 block */
 uint8_t w_ruin(uint16_t mx, uint16_t my, uint8_t d, uint8_t ground) WBANKED;
 uint8_t w_old_cairn(uint16_t mx, uint16_t my) WBANKED;
 #define W_POI_NONE 0

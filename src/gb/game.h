@@ -92,5 +92,6 @@ uint8_t visit_get(uint8_t cx, uint8_t cy) BANKED;
 
 void watchers_update(void) BANKED;
 void watchers_reset(void) BANKED;
+extern uint8_t watch_on;
 
 #endif

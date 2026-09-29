@@ -69,10 +69,10 @@ void watchers_update(void) BANKED
     uint8_t night = (uint8_t)(phase == PH_NIGHT);
 
     if (!watch_on) {
-        for (i = 0; i < 4; i++) spr_hide((uint8_t)(SP_WATCH + i));
+        /* called every 16 frames while none stands: a roll every ~4 s; likelier in the Ash */
         if (!(night || ash) || pl_state == PL_SLEEP) return;
-        /* a roll every 4 seconds or so; likelier in the Ash */
-        if (++watch_t == 0 && (wr8() & (ash ? 1 : 3)) == 0) try_spawn();
+        watch_t = (uint8_t)(watch_t + 16);
+        if (watch_t == 0 && (wr8() & (ash ? 1 : 3)) == 0) try_spawn();
         return;
     }
     rx = rel_x();

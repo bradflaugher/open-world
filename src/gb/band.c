@@ -147,7 +147,7 @@ void band_update(void) BANKED
     int16_t d = (int16_t)(tgt - band_ang), s;
     uint8_t i, a, x, tile, pal, show;
     /* ease towards the facing direction (shortest way round) */
-    if (pl_state != PL_SLEEP) {
+    if (pl_state != PL_SLEEP && d) {
         s = (int16_t)(d >> 4);
         if (!s && d) s = d > 0 ? 1 : -1;
         if (s > 0x180) s = 0x180;
