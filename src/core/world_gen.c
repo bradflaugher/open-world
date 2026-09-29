@@ -53,6 +53,17 @@ static uint8_t fold(uint8_t v, uint8_t c)
     return v >= c ? (uint8_t)(v - c) : (uint8_t)(c - v);
 }
 
+/* v - c + r if |v - c| <= r, else 0xFF. A separate small function on purpose: SDCC 4.3
+ * miscompiled the inline form (uint16_t)(mx - world.beacon[i].x + 6) inside piece() (the high
+ * byte of the result was taken from the low byte); tests/test_core_rom.py catches that class. */
+static uint8_t box_off(uint16_t v, uint16_t c, uint8_t r)
+{
+    uint16_t d = (uint16_t)(v - c);
+    d = (uint16_t)(d + r);
+    if (d > (uint16_t)(r + r)) return 0xFF;
+    return (uint8_t)d;
+}
+
 /* (ux - c)^2 + (uy - c)^2 for ux, uy in 0..2c (c <= 7). One call per statement: two calls in
  * one expression were miscompiled by SDCC here (the first result was lost). */
 static uint8_t dist2(uint8_t ux, uint8_t uy, uint8_t c)
@@ -88,14 +99,15 @@ static uint8_t on_road(const w_road_t *r, uint16_t mx, uint16_t my)
 /* set piece at one cell, or W_SP_NONE / W_SP_CLEAR */
 static uint8_t piece(uint16_t mx, uint16_t my, uint8_t mask)
 {
-    uint16_t ux, uy;
-    uint8_t i, d2;
+    uint8_t i, d2, ux, uy;
+    const w_road_t *r;
     for (i = 0; i < NUM_BEACONS; i++) {
-        if (!(mask & (W_SPM_BEACON0 << i))) continue;
-        ux = (uint16_t)(mx - world.beacon[i].x + 6);
-        uy = (uint16_t)(my - world.beacon[i].y + 6);
-        if (ux >= 13 || uy >= 13) continue;
-        d2 = dist2((uint8_t)ux, (uint8_t)uy, 6);
+        if (!(mask & (uint8_t)(W_SPM_BEACON0 << i))) continue;
+        ux = box_off(mx, world.beacon[i].x, 6);
+        if (ux == 0xFF) continue;
+        uy = box_off(my, world.beacon[i].y, 6);
+        if (uy == 0xFF) continue;
+        d2 = dist2(ux, uy, 6);
         if (d2 > 34) continue;
         if (d2 == 0) return MT_BEACON;
         if (i < 2 && mx == world.shrine[i].x && my == world.shrine[i].y) return MT_SHRINE;
@@ -110,25 +122,26 @@ static uint8_t piece(uint16_t mx, uint16_t my, uint8_t mask)
         if (i == 1) return MT_SHALLOW;
         return MT_ROCK;
     }
-    ux = (uint16_t)(mx - world.heart.x + 4);
-    uy = (uint16_t)(my - world.heart.y + 4);
-    if ((mask & W_SPM_OTHER) && ux < 9 && uy < 9) {
-        d2 = dist2((uint8_t)ux, (uint8_t)uy, 4);
-        if (d2 == 0) return MT_HEART;
-        if (d2 <= 20) return (world_detail(mx, my) & 1) ? MT_GLASS : MT_ASH;
+    if (mask & W_SPM_OTHER) {
+        ux = box_off(mx, world.heart.x, 4);
+        uy = box_off(my, world.heart.y, 4);
+        if (ux != 0xFF && uy != 0xFF) {
+            d2 = dist2(ux, uy, 4);
+            if (d2 == 0) return MT_HEART;
+            if (d2 <= 20) return (world_detail(mx, my) & 1) ? MT_GLASS : MT_ASH;
+        }
+        if (mx == world.start.x && my == world.start.y) return MT_FIRE_COLD;
     }
-    if (mx == world.start.x && my == world.start.y) return MT_FIRE_COLD;
     for (i = 0; i < W_NUM_ROADS; i++) {
-        const w_road_t *r = &w_roads[i];
-        if (!(mask & (W_SPM_ROAD0 << i))) continue;
+        if (!(mask & (uint8_t)(W_SPM_ROAD0 << i))) continue;
+        r = &w_roads[i];
         if ((uint16_t)(mx - r->bx) <= r->bw && (uint16_t)(my - r->by) <= r->bh && on_road(r, mx, my))
             return world_detail(mx, my) < 24 ? MT_RUIN_FLOOR : MT_ROAD;
     }
     if (!(mask & W_SPM_OTHER)) return W_SP_NONE;
-    ux = (uint16_t)(mx - world.start.x + 3);
-    uy = (uint16_t)(my - world.start.y + 3);
-    if (ux < 7 && uy < 7 && dist2((uint8_t)ux, (uint8_t)uy, 3) <= 10)
-        return W_SP_CLEAR;
+    ux = box_off(mx, world.start.x, 3);
+    uy = box_off(my, world.start.y, 3);
+    if (ux != 0xFF && uy != 0xFF && dist2(ux, uy, 3) <= 10) return W_SP_CLEAR;
     return W_SP_NONE;
 }
 

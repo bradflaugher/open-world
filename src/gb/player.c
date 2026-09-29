@@ -31,7 +31,7 @@ static uint16_t act_x, act_y;         /* nearby interactable (fire, beacon, shri
 uint8_t act_mt;
 static uint8_t hint_bob;
 uint8_t ending_req;
-extern uint8_t dbg_ly[10];
+
 
 uint8_t blocked_mt(uint8_t mt) BANKED
 {
@@ -337,7 +337,6 @@ void player_update(void) BANKED
         hint_on = 0;
         return;
     }
-    dbg_ly[1] = LY_REG;
     if (keys & J_LEFT) dx = -1;
     if (keys & J_RIGHT) dx = 1;
     if (keys & J_UP) dy = -1;
@@ -389,11 +388,9 @@ void player_update(void) BANKED
         idle_t = 0;
     }
 
-    dbg_ly[2] = LY_REG;
     find_targets();
     /* reaching the revealed Heart is enough */
     if (act_mt == MT_HEART && heart_revealed && pl_state != PL_GLIDE) ending_req = 1;
-    dbg_ly[3] = LY_REG;
     if (pressed & J_A) {
         if (pl_state == PL_SIT) { pl_state = PL_STAND; ambient_tempo(0); }
         act();
@@ -409,7 +406,6 @@ void player_update(void) BANKED
     }
 
     /* hint: bobbing pictogram above whatever A would act on */
-    dbg_ly[4] = LY_REG;
     hint_on = 0;
     if (pl_state != PL_SIT && can_act()) {
         uint16_t hx = act_mt != 0xFF ? act_x : tgt_x, hy = act_mt != 0xFF ? act_y : tgt_y;

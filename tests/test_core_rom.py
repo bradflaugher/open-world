@@ -26,7 +26,7 @@ ROM_SRC = r'''
 #include <stdint.h>
 #include "world.h"
 /* driven by the Python side: it writes a job, sets cmd = 1 and waits for state == 2 */
-volatile uint8_t cmd, state;
+volatile uint8_t cmd, state, ready;
 volatile uint16_t job_seed = 0xFFFF, job_x, job_y;
 volatile uint8_t job_w, job_h, job_order;
 volatile uint16_t lay[16];
@@ -38,6 +38,7 @@ void main(void)
     uint16_t i, n, k;
     uint8_t w, h;
     state = 0;
+    ready = 0x5A;
     while (1) {
         while (cmd != 1) wait_vbl_done();
         cmd = 0;
@@ -114,6 +115,10 @@ class CoreRomEquivalence(unittest.TestCase):
         from pyboy import PyBoy
         cls.pb = PyBoy(ROM, window='null')
         cls.pb.set_emulation_speed(0)
+        for _ in range(60 * 30):   # boot, crt0 (clears RAM), then the command loop
+            cls.pb.tick()
+            if cls.pb.memory[cls.syms['_ready']] == 0x5A:
+                break
 
     @classmethod
     def tearDownClass(cls):

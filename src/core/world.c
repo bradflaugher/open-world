@@ -427,7 +427,7 @@ uint8_t  w_mod_head[W_MOD_BUCKETS];
 uint8_t  w_mod_next[MAX_MODS];
 uint8_t  w_mods_seen;
 
-static uint8_t fold(uint8_t v, uint8_t c)
+static uint8_t hfold(uint8_t v, uint8_t c)
 {
     return v >= c ? (uint8_t)(v - c) : (uint8_t)(c - v);
 }
@@ -559,8 +559,8 @@ static void block_get(uint16_t kx, uint16_t ky)
 static uint8_t poi_cell(uint8_t lx, uint8_t ly, uint8_t b)
 {
     uint8_t ax, ay, i;
-    ax = fold(lx, w_pq_px);
-    ay = fold(ly, w_pq_py);
+    ax = hfold(lx, w_pq_px);
+    ay = hfold(ly, w_pq_py);
     const uint8_t *c;
     if (w_pq_type == W_POI_ROAD) {
         if (ax && ay) return 0xFF;

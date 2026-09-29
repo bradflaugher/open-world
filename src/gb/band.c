@@ -158,7 +158,7 @@ void band_update(void) BANKED
     nx_band_scx = (uint8_t)(a - 80);
 
     /* one bearing refreshed every 8 frames (world_bearing is a banked CORDIC) */
-    if ((vbl_frames & 7) == 0) switch (mark_rr) {
+    if ((vbl_frames & 7) == 1) switch (mark_rr) {
     case 0: case 1: case 2:
         mark_b[mark_rr] = world_bearing(pl_mx, pl_my, world.beacon[mark_rr].x, world.beacon[mark_rr].y);
         break;
@@ -171,11 +171,11 @@ void band_update(void) BANKED
             mark_b[4] = world_bearing(pl_mx, pl_my, cairns[cairn_near].x, cairns[cairn_near].y);
         break;
     }
-    if ((vbl_frames & 7) == 0 && ++mark_rr >= 5) mark_rr = 0;
+    if ((vbl_frames & 7) == 1 && ++mark_rr >= 5) mark_rr = 0;
 
     /* markers move only when the band turns or a bearing / state changes */
     i = (uint8_t)(beacons_lit | (heart_revealed << 3) | ((cairn_near != 0xFF) << 4));
-    if (a == mark_last_a && i == mark_last_state && (vbl_frames & 7) != 1) return;
+    if (a == mark_last_a && i == mark_last_state && (vbl_frames & 7) != 2) return;
     mark_last_a = a;
     mark_last_state = i;
     for (i = 0; i < 5; i++) {

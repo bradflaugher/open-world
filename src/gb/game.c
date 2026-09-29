@@ -352,15 +352,20 @@ static void time_tick(void)
     if (pl_state == PL_SLEEP) tf = 0;
     tod = (uint16_t)(tod + tf);
     if (tod >= DAY_FRAMES) { tod -= DAY_FRAMES; day_count++; }
-    tick8++;
-    if ((tick8 & 7) == 0) { TM_B(); phase_update(0); TM_E(0); }
-    /* spread the occasional work over different frames */
-    switch (tick8 & 31) {
-    case 3: case 11: case 19: case 27: TM_B(); scan_warm(); TM_E(1); break;
-    case 7: case 23: TM_B(); visit_mark(); TM_E(2); break;
-    case 15: TM_B(); biome_update(); TM_E(3); break;
-    case 16: TM_B(); weather_update(); TM_E(4); break;
-    case 17: TM_B(); ambient_update(); TM_E(5); break;
+    /* one heavy job per frame, on its own slot of the frame counter (the band refreshes a
+       bearing on slot 1) */
+    tick8 = vbl_frames;
+    switch (tick8 & 7) {
+    case 0: TM_B(); phase_update(0); TM_E(0); break;
+    case 2: case 6: TM_B(); scan_warm(); TM_E(1); break;
+    case 3: if (tick8 & 8) { TM_B(); visit_mark(); TM_E(2); } break;
+    case 5:
+        switch ((tick8 >> 3) & 3) {
+        case 0: TM_B(); biome_update(); TM_E(3); break;
+        case 1: TM_B(); weather_update(); TM_E(4); break;
+        case 2: TM_B(); ambient_update(); TM_E(5); break;
+        }
+        break;
     }
     TM_B(); warmth_tick(tf); TM_E(6);
 }

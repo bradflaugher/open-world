@@ -99,7 +99,7 @@ static void cgb_compute(uint16_t (*src)[8][4], uint16_t *dst, uint8_t band_pal)
 /* During play (from the VBL ISR) the CGB palettes are recomputed incrementally, 8 colours a
  * frame, into a staging copy that is published whole: a full lerp is ~36k cycles. */
 static uint16_t pal_stage[64];
-static uint8_t pal_job = 0xFF;
+static uint8_t pal_job = 0xFF, pal_again;
 uint8_t pal_pending;
 
 void pal_tick(void) BANKED
@@ -112,6 +112,7 @@ void pal_tick(void) BANKED
     memcpy(pal_obj_buf, &pal_stage[32], 64);
     pal_req = 3;
     pal_job = 0xFF;
+    if (pal_again) { pal_again = 0; pal_job = 0; }   /* inputs changed meanwhile: once more */
 }
 
 void pal_apply(void) BANKED
@@ -127,10 +128,12 @@ void pal_apply(void) BANKED
     nx_obp1 = o1;
     if (is_cgb) {
         if (hook_busy && (LCDC_REG & LCDCF_ON)) {
-            pal_job = 0;            /* restart the incremental job */
+            if (pal_job == 0xFF) pal_job = 0;   /* start the incremental job */
+            else pal_again = 1;                 /* or run it once more when it ends */
             return;
         }
         pal_job = 0xFF;
+        pal_again = 0;
         if (LCDC_REG & LCDCF_ON) while (pal_req) { __asm__("halt"); __asm__("nop"); }
         cgb_compute(cgb_bg, pal_bg_buf, PAL_SKY);
         cgb_compute(cgb_obj, pal_obj_buf, 0xFF);
