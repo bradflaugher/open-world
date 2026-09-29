@@ -55,5 +55,6 @@ void sound_mute_all(uint8_t on);
 /* debug / tests */
 uint8_t sfx_playing(void);
 uint8_t sound_debug_mode(void);        /* current ambient mode */
+uint8_t sound_debug_owned(void);       /* bitmask of channels (1,2,4,8) currently borrowed by sfx */
 
 #endif

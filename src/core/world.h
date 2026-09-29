@@ -99,6 +99,9 @@ extern wmod_t  world_mods[MAX_MODS];
 extern uint8_t world_mod_count;
 uint8_t world_mod_set(uint16_t mx, uint16_t my, uint8_t mt); /* add/replace; returns 0 if table full */
 void    world_mods_clear(void);
+/* Rebuild the mods lookup index. Call after writing world_mods[] / world_mod_count directly
+ * (e.g. after loading a save). world_mt also rebuilds lazily when world_mod_count changes. */
+void    world_mods_rebuild(void);
 
 /* ---- ancient cairns carried over from earlier worlds (offsets from start) ---- */
 #define MAX_OLD_CAIRNS 32
@@ -109,5 +112,33 @@ extern uint8_t world_old_cairn_count;
 /* ---- helpers ---- */
 uint8_t world_bearing(uint16_t fx, uint16_t fy, uint16_t tx, uint16_t ty); /* 0..255 angle, 0 = north, 64 = east */
 uint16_t world_dist(uint16_t ax, uint16_t ay, uint16_t bx, uint16_t by);   /* approx (octagonal) distance, wraps */
+
+#ifndef __SDCC
+/* ---- host-only (tests / owgen): reachability over a window of metatiles (src/core/wreach.c) ---- */
+#define WR_HALF 320                          /* window is (2*WR_HALF)^2 metatiles around the centre */
+#define WR_LANTERN (1u << IT_LANTERN)
+#define WR_STONES  (1u << IT_STONES)
+#define WR_CLOAK   (1u << IT_CLOAK)
+void    wr_load(uint16_t cx, uint16_t cy);   /* sample world_mt over the window */
+uint8_t wr_get(uint16_t mx, uint16_t my);    /* sampled metatile (0xFF outside the window) */
+/* flood fill from (sx,sy) with the given item bits. diag = 0: strict (4-way walk, glide exactly 3);
+ * diag = 1: permissive (8-way walk without corner rule, glide 2 or 3) */
+void    wr_bfs(uint16_t sx, uint16_t sy, uint8_t items, uint8_t diag);
+uint8_t wr_reached(uint16_t mx, uint16_t my);      /* this cell was reached */
+uint8_t wr_reached_adj(uint16_t mx, uint16_t my);  /* a 4-neighbour of this cell was reached */
+uint32_t wr_count(void);                           /* cells reached */
+/* Full progression check of the current world (after world_init; loads the window itself).
+ * Returns 0 if OK, else a bitmask of WRF_* failures. */
+#define WRF_START    0x0001   /* start is not a cold fire with walkable spawn / clearing */
+#define WRF_B0       0x0002   /* beacon 0 or its shrine unreachable with the lantern */
+#define WRF_B1       0x0004   /* beacon 1 or its shrine unreachable with lantern + stones */
+#define WRF_B2       0x0008   /* beacon 2 unreachable with all items */
+#define WRF_HEART    0x0010   /* heart unreachable with all items */
+#define WRF_GATE0    0x0020   /* beacon 0 reachable without the lantern */
+#define WRF_GATE1    0x0040   /* beacon 1 reachable without stones */
+#define WRF_GATE2    0x0080   /* beacon 2 reachable without the cloak */
+#define WRF_PIECES   0x0100   /* set pieces not intact (beacon, shrine, heart tiles) */
+uint16_t wr_check_world(void);
+#endif
 
 #endif
