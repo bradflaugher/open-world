@@ -56,7 +56,7 @@ direction you are facing, and it turns smoothly when you turn. It contains:
 - markers for the **Beacons** (dark pillar when unlit, a column of light when lit), the
   **Heart** (once revealed), and your nearest cairn.
 
-**The band is the compass.** Nothing in the game needs a text hint. On CGB the band has its
+**The band is the compass.** Nothing in the game needs a text hint (the pictograms are in §5). On CGB the band has its
 own sky palettes (gradient rows via attributes).
 
 ## 4. The world
@@ -135,6 +135,22 @@ fires.
   at an angle than straight on. On a diagonal it also tries the two straight directions, the
   blocked side first. If nothing fits, the glide is refused with a "no" sound and a shake. An A
   pressed in the last few frames of a glide is kept for the landing, so glides chain.
+- **Showing, not telling.** The game never explains itself in words, but it should not depend
+  on the player pressing every button on every tile either. The only letters in the world are
+  the names of the buttons, drawn on the buttons:
+  - **A over the target.** A finger on a button marked A bobs over whatever A would act on
+    with the item in hand.
+  - **SELECT over the wanderer.** When the item in hand can't act on what you face but another
+    one you carry could (lantern at the shallows, stones at the crags...), the SELECT pill and
+    its label float over the wanderer instead.
+  - **Hold B, once.** After a few seconds of walking without ever running, a finger holds B
+    over the wanderer's head. The first run retires it for good.
+  - **A lesson per item, once.** Taking the stones or the cloak from its shrine opens a short
+    wordless scene: a diorama made from the world's own tiles, where the wanderer uses the new
+    item with the same A pictogram (stepping stones and a cairn; a glide over crags and water),
+    then SELECT cycles the items you carry, the one in hand marked. After one play-through a
+    bobbing A in the corner closes it. The lessons are saved, so they never repeat, not even in
+    later worlds.
 - **Warmth:** 4 pips.
   - It drains at night away from fire, twice as fast in tundra and desert nights.
   - It refills beside a lit fire or beacon, and slowly by day.
@@ -151,6 +167,12 @@ fires.
   - Day: `0xE4`
   - Dusk: `0xF9`-ish
   - Night: `0xFC` (0 stays white)
+- **Water reads as lying below the land.** The shallows ripple (two quarters of each cell are
+  an animated tile of drifting wavelets, dense enough that on a DMG, where they share the
+  ground's shade, the texture alone says "water"). The autotiled coast is drawn the way a bank
+  looks from above: a dark wet line along the land, the foam breaking just off it, and the
+  sea shelving away from the shallows through a dither. (A bright rim on the land's edge, as it
+  first was, reads as a lit ridge: the coast looked like snowy plateaus.)
 - **CGB:** each palette class (grass, forest, water, sand, snow, rock/ash, light, sky) lerps
   between four times of day. The palette is uploaded in VBlank.
 - **Weather** is deterministic per region per day: rain streaks (sprites), snow in tundra,
@@ -191,7 +213,8 @@ Two copies of a checksummed save block hold:
 - the mods table;
 - the cairns list;
 - the visited-chunk bitmap (128x128 bits = 2 KB);
-- worlds completed.
+- worlds completed;
+- the hints already shown (version 3 appends this one byte, so a version 2 save still loads).
 
 It saves automatically when you light a fire, light a beacon, or build a cairn.
 

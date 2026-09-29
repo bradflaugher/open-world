@@ -26,7 +26,7 @@
 # DAY: an overcast northern moor. Muted sage, slate water, bone sand, lichen rock.
 @bgpal day GRASS   #f6efd6 #a3a97f #66704f #2c3226
 @bgpal day FOREST  #f6efd6 #8b9668 #4f5d3c #1f2a22
-@bgpal day WATER   #f8f6e8 #a9bdb8 #56727a #283c4c
+@bgpal day WATER   #f8f6e8 #9dc2c4 #4f7888 #243e58
 @bgpal day SAND    #fbf3dc #d6c79e #a18f68 #574a38
 @bgpal day SNOW    #ffffff #dfe5e8 #97a4ae #394452
 @bgpal day ROCK    #fff4dc #a39e94 #67635f #292829
@@ -36,7 +36,7 @@
 # DAWN: rose and pale gold; the shadows have not yet hardened (lifted blacks).
 @bgpal dawn GRASS  #fff2d8 #b9b08e #857d70 #4e4855
 @bgpal dawn FOREST #fff2d8 #a19f80 #6c6c64 #3e3c4a
-@bgpal dawn WATER  #fff4e4 #c4bcbc #7c7a8c #4a4862
+@bgpal dawn WATER  #fff4e4 #bcc4c8 #72809a #464a6c
 @bgpal dawn SAND   #fff4dc #e4cfaa #b59a80 #6c5a5a
 @bgpal dawn SNOW   #ffffff #eee0e0 #b6a8b4 #5c5468
 @bgpal dawn ROCK   #fff2e0 #b4a6a0 #847a7c #4a4250

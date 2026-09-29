@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include "world.h"
 
-enum { GS_BOOT = 0, GS_TITLE, GS_WORLD, GS_MAP, GS_ENDING, GS_WHITEOUT };
+enum { GS_BOOT = 0, GS_TITLE, GS_WORLD, GS_MAP, GS_ENDING, GS_WHITEOUT, GS_LESSON };
 enum { PL_SLEEP = 0, PL_STAND, PL_WALK, PL_SIT, PL_GLIDE };
 enum { D_N = 0, D_NE, D_E, D_SE, D_S, D_SW, D_W, D_NW };
 
@@ -48,7 +48,18 @@ extern uint8_t heart_revealed;
 extern uint8_t glow_on;
 extern uint8_t near_warm, warm6;   /* warm6: lit fire / beacon within 6 (main loop, every 8 frames) */
 uint8_t warm_within(uint8_t r) BANKED;   /* lit fire / beacon within r cells (mods table) */          /* a lit fire / beacon within 3 cells */
-extern uint8_t hint_x, hint_y, hint_on;
+extern uint8_t hint_x, hint_y, hint_on;   /* hint_on: 0 none, HINT_SHOW_A, HINT_SHOW_SEL */
+#define HINT_SHOW_A   1     /* A would act on what you face */
+#define HINT_SHOW_SEL 2     /* the item in hand would not, but another one you carry would */
+extern uint8_t run_hint_on;          /* the one-time "hold B" pictogram over the wanderer */
+/* things the player has been shown or has done (saved; they survive into new worlds) */
+extern uint8_t hints;
+#define HINT_RUN     0x01   /* has run: the hold-B pictogram is retired */
+#define HINT_STONES  0x02   /* the stones' lesson was shown */
+#define HINT_CLOAK   0x04   /* the cloak's lesson was shown */
+extern uint8_t lesson_req;           /* IT_x + 1: show that item's lesson (a shrine was taken) */
+void lesson_screen(uint8_t it) BANKED;   /* sets the item's hint bit once it has played through */
+uint8_t lesson_owed(void) BANKED;        /* IT_x + 1 for an item carried but never taught, or 0 */
 extern uint8_t band_mark_x[5];
 
 /* test hooks */

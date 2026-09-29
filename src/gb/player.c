@@ -37,6 +37,11 @@ static uint8_t hint_bob;
 uint8_t ending_req;
 static uint8_t a_buf;          /* A pressed mid-glide: acted on at the landing */
 static uint8_t ca_v;           /* can_act(), cached */
+static uint8_t sel_v;          /* another item you carry would act (the SELECT hint), cached */
+uint8_t run_hint_on, lesson_req;
+static uint8_t walk_t, run_t;  /* frames spent walking / running (the run hint) */
+#define RUN_HINT_AFTER 150     /* walking this long without ever running shows hold-B */
+#define RUN_LEARNT     30      /* running this long retires it for good */
 
 
 uint8_t blocked_mt(uint8_t mt) BANKED
@@ -231,6 +236,19 @@ static uint8_t can_act(void)
     return 0;
 }
 
+/* the item in hand can't act on what you face: would another one you carry? (the SELECT hint) */
+static uint8_t other_item_acts(void)
+{
+    uint8_t m = tgt_mt, e = equipped;
+    if (act_mt != 0xFF) return 0;
+    if (e != IT_LANTERN && (items & (1 << IT_LANTERN)) && m == MT_BRAMBLE) return 1;
+    if (e != IT_STONES && (items & (1 << IT_STONES)) &&
+        (m == MT_SHALLOW || (m == MT_CAIRN && own_cairn(tgt_x, tgt_y)))) return 1;
+    if (e != IT_CLOAK && (items & (1 << IT_CLOAK)) && blocked_mt(m) && (mt_flags[m] & MTF_GLIDE) &&
+        glide_ok()) return 1;
+    return 0;
+}
+
 void light_beacon(uint8_t i) BANKED;
 
 static void sit_down(void)
@@ -274,6 +292,9 @@ static void act(void)
                     if (it == IT_STONES) stones = STONES_MAX;
                     sfx_play(SFX_ITEM);
                     item_pulse = 120;
+                    /* the first time ever: a short wordless lesson in how to use it (its hint
+                       bit is set once it has played through: see lesson_owed) */
+                    if (!(hints & (it == IT_STONES ? HINT_STONES : HINT_CLOAK))) lesson_req = (uint8_t)(it + 1);
                     save_req = 1;
                     return;
                 }
@@ -392,6 +413,7 @@ void player_update(void) BANKED
         else if (a_buf) a_buf--;
         glide_tick();
         hint_on = 0;
+        run_hint_on = 0;
         return;
     }
     if (a_buf) { a_buf = 0; pressed |= J_A; }
@@ -400,7 +422,7 @@ void player_update(void) BANKED
     if (keys & J_UP) dy = -1;
     if (keys & J_DOWN) dy = 1;
 
-    if (pl_state == PL_SLEEP) return;       /* game.c wakes us */
+    if (pl_state == PL_SLEEP) { run_hint_on = 0; return; }      /* game.c wakes us */
 
     if (dx || dy) {
         if (dy < 0) pl_face = (uint8_t)(dx > 0 ? D_NE : dx < 0 ? D_NW : D_N);
@@ -418,6 +440,10 @@ void player_update(void) BANKED
            as wading rather than as the game slowing down */
         slow = (uint8_t)(mt_flags[m] & MTF_SLOW);
         if (slow) spd = (uint8_t)(spd - (spd >> 2));
+        if (keys & J_B) {
+            if (run_t < 255) run_t++;
+            if (run_t >= RUN_LEARNT && !(hints & HINT_RUN)) { hints |= HINT_RUN; save_req = 1; }
+        } else if (walk_t < 255) walk_t++;
         pure = (uint8_t)!(dx && dy);
         if (dx) {
             acc_x = (uint8_t)(acc_x + spd);
@@ -478,25 +504,32 @@ void player_update(void) BANKED
     hint_on = 0;
     /* can_act (glide probes, cairn search) only when the target or the inputs to it changed */
     {
-        static uint8_t ca_key[3];
-        if (ft_new || ca_key[0] != equipped || ca_key[1] != stones || ca_key[2] != heart_revealed) {
+        static uint8_t ca_key[4];
+        if (ft_new || ca_key[0] != equipped || ca_key[1] != stones || ca_key[2] != heart_revealed ||
+            ca_key[3] != items) {
             ft_new = 0;
-            ca_key[0] = equipped; ca_key[1] = stones; ca_key[2] = heart_revealed;
+            ca_key[0] = equipped; ca_key[1] = stones; ca_key[2] = heart_revealed; ca_key[3] = items;
             ca_v = can_act();
+            sel_v = (uint8_t)(!ca_v && other_item_acts());
         }
         m = ca_v;
     }
-    if (pl_state != PL_SIT && m) {
+    if (pl_state != PL_SIT && (m || sel_v)) {
         uint16_t hx = act_mt != 0xFF ? act_x : tgt_x, hy = act_mt != 0xFF ? act_y : tgt_y;
         int16_t sx = (int16_t)((int16_t)(hx - cam_mx) * 16 - cam_sx);
         int16_t sy = (int16_t)((int16_t)(hy - cam_my) * 16 - cam_sy);
         hint_bob++;
         if (sx > -8 && sx < 160 && sy > 8 && sy < 120) {
-            hint_on = 1;
+            hint_on = m ? HINT_SHOW_A : HINT_SHOW_SEL;
             hint_x = (uint8_t)(sx + 4 + 8);
             hint_y = (uint8_t)(sy + 24 - 14 + 16 - ((hint_bob >> 4) & 1));
         }
     }
+    /* one time only: walking for a while without ever running, a finger holds B over the
+       wanderer (until the first run) */
+    run_hint_on = (uint8_t)(!(hints & HINT_RUN) && !hint_on && pl_state == PL_WALK &&
+                            walk_t >= RUN_HINT_AFTER && !(keys & J_B));
+    if (run_hint_on) hint_bob++;
 }
 
 /* ---- sprites ---- */
@@ -540,7 +573,18 @@ void player_draw(void) BANKED
         i = (uint8_t)(24 + 68 - 15 + 16 + 2);
         spr_set(SP_FX, (uint8_t)(x + 4), i, SPR_SHADOW, (uint8_t)(is_cgb ? OPAL_PLAYER : 0));
     } else spr_hide(SP_FX);
-    /* hint */
-    if (hint_on) spr_set(SP_HINT, hint_x, hint_y, SPR_HINT_A, (uint8_t)(is_cgb ? OPAL_UI : 0));
+    /* hints: A over what it acts on (one sprite); SELECT over the wanderer's head (three, over
+       the shadow's free slots: never while gliding); or the one-time hold-B, also overhead */
+    pal = is_cgb ? OPAL_UI : 0;
+    if (hint_on == HINT_SHOW_SEL) {
+        i = (uint8_t)(y - 17 - ((hint_bob >> 4) & 1));
+        spr_set(SP_HINT, (uint8_t)(x - 4), i, SPR_HINT_SEL, pal);
+        spr_set(SP_HINT + 1, (uint8_t)(x + 4), i, SPR_HINT_SEL + 2, pal);
+        spr_set(SP_HINT + 2, (uint8_t)(x + 12), i, SPR_HINT_SEL + 4, pal);
+        return;
+    }
+    if (hint_on) spr_set(SP_HINT, hint_x, hint_y, SPR_HINT_A, pal);
     else spr_hide(SP_HINT);
+    if (run_hint_on) spr_set(SP_HINT + 2, (uint8_t)(x + 4), (uint8_t)(y - 18 - ((hint_bob >> 4) & 1)), SPR_HINT_B, pal);
+    else spr_hide(SP_HINT + 2);
 }

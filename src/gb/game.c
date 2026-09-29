@@ -31,6 +31,7 @@ uint8_t idle_t, item_pulse, shake;
 int8_t shake_x, shake_y;
 uint8_t heart_revealed, glow_on;
 uint8_t hint_x, hint_y, hint_on;
+uint8_t hints;
 uint16_t dbg_seed;
 uint8_t dbg_teleport;
 uint16_t dbg_tx, dbg_ty;
@@ -173,6 +174,14 @@ static void main_flush(void)
 {
     while (eq_apply()) ;
     if (save_req) { save_req = 0; save_write(); }
+}
+
+/* an item carried whose lesson was never played through (the power went off during it) */
+uint8_t lesson_owed(void) BANKED
+{
+    if ((items & (1 << IT_STONES)) && !(hints & HINT_STONES)) return IT_STONES + 1;
+    if ((items & (1 << IT_CLOAK)) && !(hints & HINT_CLOAK)) return IT_CLOAK + 1;
+    return 0;
 }
 
 void light_beacon(uint8_t i) BANKED
@@ -520,6 +529,8 @@ void world_enter(uint8_t fresh) BANKED
     band_reset_angle();
     fx_redraw();
     watchers_reset();
+    hint_on = 0;              /* the hints are worked out again by the first game frame */
+    run_hint_on = 0;
     scan_warm();
     visit_mark();
     anim_on = 1;
@@ -579,6 +590,7 @@ static void ending(void)
     pl_state = PL_SIT;
     pl_face = D_N;
     hint_on = 0;
+    run_hint_on = 0;
     ambient_mode(AMB_ENDING);
     ambient_beacons(7);
     for (i = 0; i < 240; i++) {
@@ -603,7 +615,7 @@ static void ending(void)
 }
 
 /* ---------------------------------------------------------------- the world loop */
-enum { REQ_NONE = 0, REQ_MAP, REQ_WHITEOUT, REQ_ENDING, REQ_TELEPORT, REQ_REFILL };
+enum { REQ_NONE = 0, REQ_MAP, REQ_WHITEOUT, REQ_ENDING, REQ_TELEPORT, REQ_REFILL, REQ_LESSON };
 volatile uint8_t world_req;
 uint16_t dbg_stalls, dbg_late;
 volatile uint8_t dbg_stage;
@@ -662,6 +674,7 @@ void world_frame(void) BANKED
     PSTAGE(PF_PLAYER);
     dbg_stage = 2;
     if (ending_req) { request(REQ_ENDING); return; }
+    if (lesson_req && pl_state != PL_SLEEP) { request(REQ_LESSON); return; }   /* owed ones: once awake */
     camera_update();
     time_tick();
     PSTAGE(PF_TIME);
@@ -756,6 +769,13 @@ static void world_run(void)
             break;
         case REQ_ENDING:
             ending();
+            break;
+        case REQ_LESSON:
+            r = lesson_req;
+            lesson_req = 0;
+            lesson_screen((uint8_t)(r - 1));
+            save_req = 1;                 /* the lesson is marked seen only now */
+            lesson_req = lesson_owed();
             break;
         case REQ_TELEPORT:
             player_place(dbg_tx, dbg_ty);
@@ -935,6 +955,7 @@ void game_main(void) BANKED
             if (items & (1 << IT_STONES)) stones = STONES_MAX;   /* older saves: the pouch is endless now */
             heart_revealed = (uint8_t)(beacons_lit == 7);
             ambient_seed(world.seed);
+            lesson_req = lesson_owed();
         } else {
             new_world(fresh_seed());
             save_write();

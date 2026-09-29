@@ -68,7 +68,7 @@ OBJ_SLOTS = ['PLAYER', 'EMBER', 'UI', 'WEATHER', 'WATCHER', 'BAND', 'LIGHT', 'GL
 PHASES = ['dawn', 'day', 'dusk', 'night']
 
 # Animated tiles that must exist (NAME, metatile that uses it).
-ANIM_REQUIRED = ['SEA', 'GLINT', 'FIRE_L', 'FIRE_R', 'BEACON_L', 'BEACON_R', 'HEART_L', 'HEART_R']
+ANIM_REQUIRED = ['SEA', 'GLINT', 'SHALLOW', 'FIRE_L', 'FIRE_R', 'BEACON_L', 'BEACON_R', 'HEART_L', 'HEART_R']
 
 BAND_REQUIRED = ['BAND_SKY_TOP', 'BAND_SKY', 'BAND_STAR0', 'BAND_STAR1', 'BAND_LAND']
 
@@ -306,13 +306,18 @@ def edge_depth(u, v, variant):
     return math.hypot(pu, pv) - r
 
 
-# a gentle wobble along the shoreline; period 8 in x + y, so neighbouring tiles line up
-EDGE_WOBBLE = (0.0, 0.6, 1.0, 0.6, 0.0, -0.5, -0.8, -0.5)
+# a wobble along the shoreline; period 8 in x + y, so neighbouring tiles line up. It is wide
+# enough that the coast reads as a waterline, not as the square edge of a raised slab.
+EDGE_WOBBLE = (0.0, 0.9, 1.5, 0.9, 0.0, -0.8, -1.3, -0.8)
 
 
 def edge_tile(base, corner, variant, cls):
     """one quarter tile: base texture with the shoreline drawn on the water side.
-    colour 0 = light (foam: it stays bright at night), 1 = pale water / wet sand."""
+    The water must read as lying *below* the land: a bright rim along the land's edge reads as
+    a lit ridge (the old coast looked like snowy plateaus), so the bank is a dark line (wet
+    ground / the bank's shadow) with the foam breaking just off it, and the sea drops away from
+    the shallows through a dither instead of a crisp white crest.
+    colour 0 = light (foam: it stays bright at night), 1 = pale water, 2 = wet line / mid water."""
     out = []
     for y in range(8):
         row = []
@@ -322,17 +327,23 @@ def edge_tile(base, corner, variant, cls):
             d = edge_depth(u, v, variant) - EDGE_WOBBLE[(x + y) & 7]
             c = base[y][x]
             if cls == 'SEA':
-                if d < 2.4:
-                    c = 1                                  # the pale shelf
-                elif d < 3.4:
-                    c = 0 if (x * 5 + y * 3) % 7 else 1    # a broken line of foam
-                elif d < 4.4 and (x + y * 3) % 4 == 0:
-                    c = 1                                  # spray
+                if d < 1.9:
+                    c = 1                                  # the pale shelf (continues the shallows)
+                elif d < 3.8:
+                    c = 1 if (x + y) & 1 else 2            # it shelves away: a dither into the deep
+                    if (x * 5 + y * 3) % 11 == 0:
+                        c = 0                              # the odd breaker
+                elif d < 4.6 and (x * 3 + y * 5) % 6 == 0:
+                    c = 0                                  # spray
             else:
-                if d < 1.2:
-                    c = 0 if (x * 3 + y) % 5 else 1        # lapping foam on the sand
-                elif d < 2.4 and (x * 7 + y * 5) % 3 == 0:
-                    c = 2                                  # the wet line
+                if d < 0.9:
+                    c = 2                                  # the wet bank line
+                elif d < 2.0:
+                    c = 0 if (x * 3 + y) % 5 else 1        # foam lapping just off the bank
+                elif d < 3.0 and (x * 7 + y * 5) % 4 == 0:
+                    c = 0                                  # bubbles
+                elif d < 3.0:
+                    c = 1
             row.append(c)
         out.append(tuple(row))
     return tuple(out)

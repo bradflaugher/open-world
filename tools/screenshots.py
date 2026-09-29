@@ -2,7 +2,8 @@
 
     make rom build/owgen && python3 tools/screenshots.py
 
-Writes {cgb,dmg}_{title,day,dusk,night,rain,snow,map,beacon,band,ending}.png (3x) and
+Writes {cgb,dmg}_{title,day,dusk,night,rain,snow,hint_run,lesson,hint_select,map,beacon,band,
+ending}.png (3x) and
 gameplay.gif (a short CGB walk from dusk into night, 2x).
 """
 import os
@@ -10,8 +11,9 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, 'tests'))
-from test_rom import (Game, GS_TITLE, GS_WORLD, GS_MAP, GS_ENDING, MT, T_DUSK, T_NIGHT, T_DAY,  # noqa: E402
-                      WX_CLEAR, WX_RAIN, WX_SNOW, PL_GLIDE, host_region, MTF_SOLID)
+from test_rom import (Game, GS_TITLE, GS_WORLD, GS_MAP, GS_ENDING, GS_LESSON, MT, T_DUSK,  # noqa: E402
+                      T_NIGHT, T_DAY, WX_CLEAR, WX_RAIN, WX_SNOW, PL_GLIDE, IT_LANTERN, DIRV,
+                      host_region, MTF_SOLID)
 
 OUT = os.path.join(ROOT, 'docs', 'screens')
 SCALE = 3
@@ -42,6 +44,22 @@ def find_cell(g, center, want, r=60):
             if best is None or d < best[0]:
                 best = (d, (x, y))
     return best and best[1]
+
+
+def next_to(g, want, center, r=12):
+    """teleport onto a walkable cell 4-adjacent to one holding a metatile in `want` (or the
+    cell `want` itself when it is a position) and face it"""
+    cx, cy = center
+    reg = host_region(SEED, cx - r, cy - r, 2 * r + 1, 2 * r + 1)
+    targets = [want] if isinstance(want, tuple) else sorted(k for k, v in reg.items() if v in want)
+    for t in targets:
+        for d, (dx, dy) in DIRV.items():
+            a = (t[0] - dx, t[1] - dy)
+            if a in reg and walkable(g, reg[a]):
+                g.teleport(*a)
+                g.face(d)
+                return t
+    return None
 
 
 def shoot(cgb):
@@ -83,6 +101,27 @@ def shoot(cgb):
         g.run(90)
         save(g, 'snow')
     g.set_u8('weather', WX_CLEAR)
+    # the one-time hold-B: walking a while without running
+    g.teleport(*w['start'])
+    g.set_time(T_DAY + 300)
+    g.pb.button_press('left')
+    g.run(170)
+    save(g, 'hint_run')
+    g.pb.button_release('left')
+    # the stones' lesson, mid-way: one stone down, A pressing for the next
+    next_to(g, w['shrine'][0], w['shrine'][0])
+    g.press('a', after=2)
+    g.wait(lambda: g.state() == GS_LESSON, 60)
+    g.run(118)
+    save(g, 'lesson')
+    g.wait(lambda: g.u8('lesson_ready'), 1500)
+    g.press('a')
+    g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 1500)
+    # SELECT over the wanderer: the lantern in hand at the shallows, the stones in the pouch
+    g.set_u8('equipped', IT_LANTERN)
+    next_to(g, {MT['MT_SHALLOW']}, w['beacon'][1])
+    g.run(20)
+    save(g, 'hint_select')
     b = w['beacon'][0]
     g.teleport(b[0], b[1] + 1)
     g.set_time(T_DUSK + 1500)

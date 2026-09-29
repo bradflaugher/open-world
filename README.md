@@ -20,7 +20,7 @@
 You wake beside a cold fire. Far off, on the horizon, three dark pillars stand against the sky.
 
 There is no dialogue, no story text, no numbers and no combat. The only words in the cartridge
-are the title. Each world is generated from a 16-bit seed, is 65,536 × 65,536 cells in size,
+are the title and the names of the buttons, drawn on the buttons. Each world is generated from a 16-bit seed, is 65,536 × 65,536 cells in size,
 and wraps at the edges.
 
 Light the three **beacons**. Each is guarded differently: brambles, open water, a ring of crags.
@@ -83,6 +83,26 @@ There is only ever one release: the latest build. Its tag is the build date (`YY
 On the title screen, **A** continues. To begin a new world over an existing save, **hold SELECT**
 until the flame goes out.
 
+### Being shown, not told
+
+There is no tutorial, but the game doesn't make you guess either. It shows, with pictures of
+the buttons:
+
+- **A** bobs over anything the item in your hand can act on.
+- **SELECT** floats over the wanderer when the item in your hand can't act on what you face, but
+  another item you carry can.
+- **Hold B**: once, after you have walked for a few seconds without running. Your first run
+  retires it.
+- **Each new item** (the first time you take it from its shrine) opens a short wordless scene:
+  the wanderer uses it in a little diorama, then SELECT cycles your items. Once it has played
+  through, a bobbing A in the corner closes it. You see each one once, ever.
+
+<p align="center">
+  <img src="docs/screens/cgb_lesson.png" width="240" alt="The stones' lesson: stepping stones and a cairn">
+  <img src="docs/screens/cgb_hint_select.png" width="240" alt="SELECT over the wanderer at the shallows">
+  <img src="docs/screens/dmg_hint_run.png" width="240" alt="Hold B, shown once">
+</p>
+
 ### What you carry
 
 | Item | Found | Verbs |
@@ -91,7 +111,8 @@ until the flame goes out.
 | Stones | the shrine at the first beacon | build a cairn (you can see it on the horizon and the map, and it carries into the next world), make stepping stones across shallows, pick your cairns back up. The pouch never runs out (you can keep 32 cairns standing; the oldest comes down when you build another). |
 | Cloak | the shrine at the second beacon | glide over rock, water or thorns: three cells, or two or four when that is where the ground is. Facing a diagonal, it also tries the two straight directions. An A pressed just before you land starts the next glide. |
 
-A small pictogram bobs over anything the item in your hand can act on.
+A finger on an **A** bobs over anything the item in your hand can act on, and a **SELECT** over the
+wanderer means another item you carry would.
 
 ### Warmth, night and weather
 
@@ -120,7 +141,10 @@ the VBlank interrupt, so movement stays at 60 fps even when generation is slow.
 
 **Autotiled shores.** Each quarter of a water cell is chosen from its three neighbours in that
 corner's direction (straight edge, vertical edge, outer bay or inner bite). The fix-up pass runs
-one line behind the streaming edge, where all the neighbours are known.
+one line behind the streaming edge, where all the neighbours are known. The coast is drawn so the
+water sits *below* the land: a dark wet line along the bank, foam breaking just off it, the sea
+shelving away through a dither, and the shallows rippling (an animated tile of drifting
+wavelets, which on a DMG is what tells water from ground of the same shade).
 
 **The generator** (`src/core/`) is portable C that builds with both SDCC and gcc:
 - **Terrain.** Integer value noise from a permutation-table hash: two octaves of elevation, plus
@@ -153,7 +177,7 @@ src/core/   portable world core (SDCC + gcc)
   world_gen.c   layout, set pieces, causeways, POIs, bearings          [banked]
 src/gb/     Game Boy front end
   gfx.c isr.s land.c   ISRs, band/land split, streaming ring, blit queue  [bank 0]
-  game.c player.c band.c fx.c pal.c map.c watchers.c save.c               [banked]
+  game.c player.c band.c fx.c pal.c map.c watchers.c save.c lesson.c      [banked]
   sound.c sound_core.c   generative ambient engine + sfx
   assets.c      generated tiles, sprites, palettes, title                [banked]
 assets/     hand-editable ASCII-art tiles, sprites, palettes
@@ -202,9 +226,13 @@ build/owgen stats 1 64               # biome mix, distances, reachability over 6
   - the split line is clean;
   - collision;
   - lighting fires and beacons, shrines, cairns, stepping stones and gliding;
+  - the hints: A, SELECT and the one-time hold-B, read from real OAM;
+  - each item's lesson plays through once, can't be closed early, and is never shown again,
+    even in a new world started over the save;
   - whiteout and respawn;
   - the map;
-  - a save round trip, and recovery from a torn save;
+  - a save round trip, recovery from a torn save, and loading a save from the previous
+    version;
   - the ending;
   - the Watchers;
   - no frame drops;
