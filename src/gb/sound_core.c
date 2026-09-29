@@ -6,7 +6,7 @@
  *   CH3 wave   drone pad: one 32-sample wavetable per biome, a root that now and then leans
  *              to a neighbouring degree (4th / 5th / b7 / b6 / tritone...).  Wave RAM is
  *              only rewritten with the DAC off (NR30 = 0), after the drone has faded to 0%.
- *   CH1 pulse  "tape loops": 6 generative loops of unequal prime lengths (13..71 steps) each
+ *   CH1 pulse  "tape loops": 6 generative loops of unequal prime lengths (17..71 steps) each
  *              carrying one note of the biome's 8-note modal pool, plus a night "star" loop
  *              and three beacon loops (one per lit beacon: D5, A5, E6 - an open sus chord).
  *              Loops phase against each other, so the music never repeats exactly; notes are
@@ -23,7 +23,7 @@
  *   changes dip / fade the drone first.  Mode changes crossfade via a global attenuation.
  *
  * SFX: register scripts (tools/gen_music.py -> sound_data.h) on two voices with priorities.
- * An sfx owns the channels in its mask (never CH3); the ambient keeps its state for an snd_owned
+ * An sfx owns the channels in its mask (never CH3); the ambient keeps its state for an owned
  * channel but does not touch the hardware; on release the channel is silenced (CH1/CH2,
  * picked up by the next note) or the wind is restored at its current level (CH4).
  *
@@ -121,9 +121,9 @@ static const uint8_t b_drone[B_COUNT][4] = {
 static const uint8_t b_dlev[B_COUNT]  = { 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 };
 static const uint8_t b_pset[B_COUNT]  = { 1, 1, 1, 0, 0, 2, 2, 2, 2, 2 };
 static const uint8_t b_skip[B_COUNT]  = { 96, 88, 80, 72, 88, 100, 96, 72, 72, 128 };
-static const uint8_t b_vol[B_COUNT]   = { 8, 8, 8, 9, 9, 8, 7, 9, 8, 8 };
+static const uint8_t b_vol[B_COUNT]   = { 8, 8, 8, 9, 9, 8, 6, 9, 8, 8 };
 static const uint8_t b_pace[B_COUNT]  = { 7, 7, 7, 7, 6, 6, 5, 7, 7, 7 };
-static const uint8_t b_duty[B_COUNT]  = { 0x80, 0x80, 0x80, 0x80, 0x40, 0x40, 0x40, 0x80, 0x40, 0x80 };
+static const uint8_t b_duty[B_COUNT]  = { 0x80, 0x80, 0x80, 0x80, 0x40, 0x40, 0x80, 0x80, 0x40, 0x80 };
 static const uint8_t b_det[B_COUNT]   = { 1, 1, 1, 1, 1, 1, 0, 1, 3, 1 };
 static const uint8_t b_slow[B_COUNT]  = { 4, 4, 3, 0, 1, 2, 2, 1, 2, 3 };
 /* wind: calm, gust, rise, fall, gust probability, calm colour, gust colour, flags */
@@ -850,8 +850,11 @@ static void switch_mode(uint8_t m)
     mf_rate = 0;
     muffle = 0;
     m_lvl = 7;
-    if (att >= 4 || m == AMB_SILENT)
+    if (att >= 4 || m == AMB_SILENT) {
         silence_pulses();
+        d_code = 4;                         /* drone and wind are silent: ramp from zero */
+        w_lvl = 0;
+    }
     g_det = 1;
     g_fb = 2;
     switch (m) {
@@ -891,6 +894,22 @@ static void switch_mode(uint8_t m)
     nr51_update();
 }
 
+/* After a switch from silence: the world fades in; the composed motifs start at full
+ * voice (their drone and wind still ramp up by themselves). */
+static void fade_in(void)
+{
+    uint8_t m = snd_cur_mode;
+    if (m == AMB_SILENT) {
+        snd_xf = XF_NONE;
+    } else if (m == AMB_TITLE || m == AMB_WAKE || m == AMB_ENDING) {
+        snd_xf = XF_NONE;
+        att = 0;
+    } else {
+        snd_xf = XF_IN;
+        xf_t = 20;
+    }
+}
+
 static void request_mode(uint8_t m)
 {
     if (m >= NUM_AMB)
@@ -917,10 +936,7 @@ static void request_mode(uint8_t m)
     if (snd_cur_mode == AMB_SILENT || att >= 4 || (snd_cur_mode == AMB_ENDING && !lay)) {
         att = 4;
         switch_mode(m);
-        if (m != AMB_SILENT) {
-            snd_xf = XF_IN;
-            xf_t = 20;
-        }
+        fade_in();
         return;
     }
     snd_xf = XF_OUT;
@@ -946,12 +962,7 @@ static void xfade_frame(void)
             att_apply();
         } else {
             switch_mode(snd_xf_next);
-            if (snd_xf_next == AMB_SILENT) {
-                snd_xf = XF_NONE;
-            } else {
-                snd_xf = XF_IN;
-                xf_t = 20;
-            }
+            fade_in();
         }
     } else {
         xf_t = 20;

@@ -53,3 +53,10 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# build outputs
+build/
+__pycache__/
+*.gb
+*.sav
+*.ram
