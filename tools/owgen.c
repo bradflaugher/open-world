@@ -4,6 +4,8 @@
  *   owgen stats FIRSTSEED COUNT     biome histogram, distances, progression check pass count
  *   owgen png SEED FILE [SCALE [W H [CX CY]]]  PPM image (default 512x512 metatiles, scale 1)
  *   owgen mt SEED X Y               world_mt value (decimal)
+ *   owgen dump SEED X0 Y0 W H       world_mt of a W x H region, row-major, as hex (one row per line)
+ *   owgen layoutraw SEED            start, beacons, shrines, heart as 18 decimal numbers
  *   owgen legend                    character legend
  */
 #include <stdio.h>
@@ -155,6 +157,19 @@ int main(int argc, char **argv)
         if (argc >= 7) { w = (int)num(argv[5]); h = (int)num(argv[6]); }
         if (argc >= 9) { cx = (uint16_t)num(argv[7]); cy = (uint16_t)num(argv[8]); }
         return ppm(argv[3], scale < 1 ? 1 : scale, w, h, cx, cy);
+    } else if (!strcmp(argv[1], "dump") && argc >= 7) {
+        uint16_t x0 = (uint16_t)num(argv[3]), y0 = (uint16_t)num(argv[4]);
+        int w = (int)num(argv[5]), h = (int)num(argv[6]), x, y;
+        for (y = 0; y < h; y++) {
+            for (x = 0; x < w; x++) printf("%02x", world_mt((uint16_t)(x0 + x), (uint16_t)(y0 + y)));
+            putchar('\n');
+        }
+    } else if (!strcmp(argv[1], "layoutraw")) {
+        int i;
+        printf("%u %u", world.start.x, world.start.y);
+        for (i = 0; i < NUM_BEACONS; i++) printf(" %u %u", world.beacon[i].x, world.beacon[i].y);
+        for (i = 0; i < NUM_BEACONS; i++) printf(" %u %u", world.shrine[i].x, world.shrine[i].y);
+        printf(" %u %u\n", world.heart.x, world.heart.y);
     } else if (!strcmp(argv[1], "mt") && argc >= 5) {
         printf("%u\n", world_mt((uint16_t)num(argv[3]), (uint16_t)num(argv[4])));
     } else {

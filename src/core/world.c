@@ -558,7 +558,9 @@ static void block_get(uint16_t kx, uint16_t ky)
  * block corner it sits on), or 0xFF */
 static uint8_t poi_cell(uint8_t lx, uint8_t ly, uint8_t b)
 {
-    uint8_t ax = fold(lx, w_pq_px), ay = fold(ly, w_pq_py), i;
+    uint8_t ax, ay, i;
+    ax = fold(lx, w_pq_px);
+    ay = fold(ly, w_pq_py);
     const uint8_t *c;
     if (w_pq_type == W_POI_ROAD) {
         if (ax && ay) return 0xFF;
@@ -658,7 +660,11 @@ static uint8_t cell(uint16_t mx, uint16_t my)
     if ((mx & 0xFFF0) != w_pq_x || (my & 0xFFF0) != w_pq_y) poi_roll(mx & 0xFFF0, my & 0xFFF0);
     if (w_pq_type != W_POI_NONE) t = poi_cell((uint8_t)mx & 15, (uint8_t)my & 15, b);
     if (t == 0xFF) {
-        if (b == B_RUINS) t = w_ruin(mx, my, gd, terrain(w_classify_base(ge, gm)));
+        if (b == B_RUINS) {
+            t = w_classify_base(ge, gm);
+            t = terrain(t);
+            t = w_ruin(mx, my, gd, t);
+        }
         else t = terrain(b);
         if (world_old_cairn_count && b >= B_SHORE && b != B_ROCK && w_ready &&
             !(((uint8_t)((uint8_t)mx - (uint8_t)world.start.x) | (uint8_t)((uint8_t)my - (uint8_t)world.start.y)) & 3) &&

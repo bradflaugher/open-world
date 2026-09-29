@@ -53,6 +53,18 @@ static uint8_t fold(uint8_t v, uint8_t c)
     return v >= c ? (uint8_t)(v - c) : (uint8_t)(c - v);
 }
 
+/* (ux - c)^2 + (uy - c)^2 for ux, uy in 0..2c (c <= 7). One call per statement: two calls in
+ * one expression were miscompiled by SDCC here (the first result was lost). */
+static uint8_t dist2(uint8_t ux, uint8_t uy, uint8_t c)
+{
+    uint8_t a, b;
+    a = fold(ux, c);
+    a = sq[a];
+    b = fold(uy, c);
+    b = sq[b];
+    return (uint8_t)(a + b);
+}
+
 static uint8_t on_road(const w_road_t *r, uint16_t mx, uint16_t my)
 {
     uint16_t maj, mn, t;
@@ -83,7 +95,7 @@ static uint8_t piece(uint16_t mx, uint16_t my, uint8_t mask)
         ux = (uint16_t)(mx - world.beacon[i].x + 6);
         uy = (uint16_t)(my - world.beacon[i].y + 6);
         if (ux >= 13 || uy >= 13) continue;
-        d2 = (uint8_t)(sq[fold((uint8_t)ux, 6)] + sq[fold((uint8_t)uy, 6)]);
+        d2 = dist2((uint8_t)ux, (uint8_t)uy, 6);
         if (d2 > 34) continue;
         if (d2 == 0) return MT_BEACON;
         if (i < 2 && mx == world.shrine[i].x && my == world.shrine[i].y) return MT_SHRINE;
@@ -101,7 +113,7 @@ static uint8_t piece(uint16_t mx, uint16_t my, uint8_t mask)
     ux = (uint16_t)(mx - world.heart.x + 4);
     uy = (uint16_t)(my - world.heart.y + 4);
     if ((mask & W_SPM_OTHER) && ux < 9 && uy < 9) {
-        d2 = (uint8_t)(sq[fold((uint8_t)ux, 4)] + sq[fold((uint8_t)uy, 4)]);
+        d2 = dist2((uint8_t)ux, (uint8_t)uy, 4);
         if (d2 == 0) return MT_HEART;
         if (d2 <= 20) return (world_detail(mx, my) & 1) ? MT_GLASS : MT_ASH;
     }
@@ -115,7 +127,7 @@ static uint8_t piece(uint16_t mx, uint16_t my, uint8_t mask)
     if (!(mask & W_SPM_OTHER)) return W_SP_NONE;
     ux = (uint16_t)(mx - world.start.x + 3);
     uy = (uint16_t)(my - world.start.y + 3);
-    if (ux < 7 && uy < 7 && (uint8_t)(sq[fold((uint8_t)ux, 3)] + sq[fold((uint8_t)uy, 3)]) <= 10)
+    if (ux < 7 && uy < 7 && dist2((uint8_t)ux, (uint8_t)uy, 3) <= 10)
         return W_SP_CLEAR;
     return W_SP_NONE;
 }
@@ -588,7 +600,7 @@ void world_init(uint16_t seed) WBANKED
 
     for (tries = 0; tries < 64; tries++) {
         uint8_t hb;
-        uint16_t hdist;
+        uint16_t hdist, adx, ady;
         /* NOTE: one rnd() per statement. C leaves the evaluation order of operands unspecified
          * and SDCC and gcc differ, so two rnd() calls in one expression break host/ROM parity. */
         for (i = 0; i < NUM_BEACONS; i++) {
@@ -613,7 +625,9 @@ void world_init(uint16_t seed) WBANKED
             int16_t dy = (int16_t)(world.beacon[i].y - world.start.y);
             g = world.beacon[i];
             world.shrine[i] = world.beacon[i];
-            if (uabs16(dx) >= uabs16(dy)) {
+            adx = uabs16(dx);
+            ady = uabs16(dy);
+            if (adx >= ady) {
                 g.x = (uint16_t)(g.x + (dx > 0 ? -6 : 6));
                 world.shrine[i].y = (uint16_t)(world.shrine[i].y + 2);   /* off the approach axis */
             } else {

@@ -264,6 +264,18 @@ static void phase_update(uint8_t instant)
     glow_on = (uint8_t)(p == PH_NIGHT || (p == PH_DUSK && into > 2000));
 }
 
+/* weather hash (own: the core's hashes are not re-entrant and this runs in the VBL ISR) */
+static uint8_t wx_hash(uint16_t a, uint16_t b)
+{
+    uint16_t x = (uint16_t)(a * 0x2545u ^ b);
+    x ^= (uint16_t)(x << 7);
+    x ^= (uint16_t)(x >> 9);
+    x ^= (uint16_t)(x << 8);
+    x = (uint16_t)(x + b * 0x61u);
+    x ^= (uint16_t)(x >> 7);
+    return (uint8_t)(x ^ (x >> 8));
+}
+
 static void weather_update(void)
 {
     uint16_t rx = (uint16_t)(pl_mx >> 6), ry = (uint16_t)(pl_my >> 6);
@@ -272,7 +284,7 @@ static void weather_update(void)
     wx_region_x = rx;
     wx_region_y = ry;
     wx_day = day_count;
-    h = world_detail((uint16_t)(rx * 13u + day_count * 7u + 0x51u), (uint16_t)(ry * 29u + (day_count >> 1)));
+    h = wx_hash((uint16_t)(rx ^ (world.seed * 3u)), (uint16_t)(ry + day_count * 0x9E37u));
     b = biome_here;
     if (h < 150) w = WX_CLEAR;
     else if (h < 195) w = WX_RAIN;
@@ -608,35 +620,47 @@ static void world_run(void)
 /* ---------------------------------------------------------------- title */
 #define TSPR_BASE 100   /* generated title sprite tiles (runes, tallies) */
 
-static void gen_rune(uint8_t slot, uint8_t v)
+/* an 8x16 sprite from a 16-row stroke mask: strokes in colour 3 with a colour-1 halo */
+static void gen_glyph(uint8_t slot, const uint8_t *mask)
 {
-    uint8_t t[32], y, bit;
-    memset(t, 0, sizeof t);
-    /* stem */
-    for (y = 1; y < 15; y++) { bit = 0x18; t[y * 2] |= bit; t[y * 2 + 1] |= bit; }
-    /* four twigs chosen by the nibble */
-    for (y = 0; y < 3; y++) {
-        if (v & 1) { t[(4 - y) * 2] |= (uint8_t)(0x04 >> y); t[(4 - y) * 2 + 1] |= (uint8_t)(0x04 >> y); }
-        if (v & 2) { t[(4 - y) * 2] |= (uint8_t)(0x20 << y); t[(4 - y) * 2 + 1] |= (uint8_t)(0x20 << y); }
-        if (v & 4) { t[(10 + y) * 2] |= (uint8_t)(0x04 >> y); t[(10 + y) * 2 + 1] |= (uint8_t)(0x04 >> y); }
-        if (v & 8) { t[(10 + y) * 2] |= (uint8_t)(0x20 << y); t[(10 + y) * 2 + 1] |= (uint8_t)(0x20 << y); }
+    uint8_t t[32], y, m, h;
+    for (y = 0; y < 16; y++) {
+        m = mask[y];
+        h = (uint8_t)(m | (m << 1) | (m >> 1));
+        if (y) h |= mask[y - 1];
+        if (y < 15) h |= mask[y + 1];
+        t[y * 2] = h;          /* low plane: halo + stroke */
+        t[y * 2 + 1] = m;      /* high plane: stroke */
     }
-    if (!v) { t[7 * 2] |= 0x24; t[7 * 2 + 1] |= 0x24; t[8 * 2] |= 0x24; t[8 * 2 + 1] |= 0x24; }
     set_sprite_data(slot, 2, t);
 }
 
+/* a rune for one nibble of the seed: a stem with up to four twigs */
+static void gen_rune(uint8_t slot, uint8_t v)
+{
+    uint8_t mk[16], y;
+    memset(mk, 0, sizeof mk);
+    for (y = 2; y < 14; y++) mk[y] = 0x10;
+    for (y = 0; y < 3; y++) {
+        if (v & 1) mk[5 - y] |= (uint8_t)(0x08 >> y);
+        if (v & 2) mk[5 - y] |= (uint8_t)(0x20 << y);
+        if (v & 4) mk[10 + y] |= (uint8_t)(0x08 >> y);
+        if (v & 8) mk[10 + y] |= (uint8_t)(0x20 << y);
+    }
+    if (!v) { mk[7] |= 0x28; mk[8] |= 0x28; }
+    gen_glyph(slot, mk);
+}
+
+/* n tally marks (1..5): four strokes and the fifth across */
 static void gen_tally(uint8_t slot, uint8_t n)
 {
-    uint8_t t[32], y, row, k;
-    memset(t, 0, sizeof t);
-    for (y = 3; y < 13; y++) {
-        row = 0;
-        for (k = 0; k < n && k < 4; k++) row |= (uint8_t)(0x40 >> (k * 2));
-        if (n >= 5) row |= (uint8_t)(0x80 >> ((y - 3) * 7 / 9));
-        t[y * 2] = row;
-        t[y * 2 + 1] = row;
+    uint8_t mk[16], y, k;
+    memset(mk, 0, sizeof mk);
+    for (y = 4; y < 13; y++) {
+        for (k = 0; k < n && k < 4; k++) mk[y] |= (uint8_t)(0x40 >> (k * 2 - 0));
+        if (n >= 5) mk[y] |= (uint8_t)(0x80 >> ((y - 4) * 7 / 8));
     }
-    set_sprite_data(slot, 2, t);
+    gen_glyph(slot, mk);
 }
 
 static void title_sprites(uint8_t have_save, uint16_t seed, uint8_t t)

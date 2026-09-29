@@ -30,6 +30,7 @@ static uint8_t srand8(void)
 
 static const int8_t sway[16] = { 0, 1, 1, 2, 2, 2, 1, 1, 0, -1, -1, -2, -2, -2, -1, -1 };
 
+static uint8_t wx_rolled = 0xFF;
 static uint8_t glow_last = 0xFF, glow_last_x, wx_hidden, hud_key[6];
 
 static void glow_draw(void)
@@ -78,6 +79,7 @@ static void weather_draw(void)
         return;
     }
     wx_hidden = 0;
+    if (wx_rolled != weather) { wx_rolled = weather; fx_weather_roll(); }
     if (weather == WX_SNOW) { tile = SPR_SNOW; fall = (uint8_t)((vbl_frames & 1) ? 1 : 0); }
     else { tile = SPR_RAIN; fall = weather == WX_STORM ? 5 : 4; }
     pal = is_cgb ? OPAL_WEATHER : S_PALETTE;

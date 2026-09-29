@@ -391,6 +391,8 @@ void player_update(void) BANKED
 
     dbg_ly[2] = LY_REG;
     find_targets();
+    /* reaching the revealed Heart is enough */
+    if (act_mt == MT_HEART && heart_revealed && pl_state != PL_GLIDE) ending_req = 1;
     dbg_ly[3] = LY_REG;
     if (pressed & J_A) {
         if (pl_state == PL_SIT) { pl_state = PL_STAND; ambient_tempo(0); }

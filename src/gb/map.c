@@ -1,7 +1,8 @@
-/* map.c - OPEN WORLD map (START): one pixel per visited chunk (8x8 metatiles), 128 x 112 px
- * (the 128 x 128-chunk region centred on the start, rows 8..119), drawn into 224 unique BG
- * tiles (0..223) with the frame tiles from map_tiles at 224+. It "surveys" outwards from the
- * wanderer with the LCD on; unvisited chunks show the fog dither. */
+/* map.c - OPEN WORLD map (START): the visited-chunk bitmap (128 x 128 chunks of 8x8 metatiles
+ * round the start) drawn at 2x2 px per chunk: a 128 x 112 px chart of the central 64 x 56 chunks
+ * (+-256 metatiles, which holds every beacon and the Heart), in 224 unique BG tiles (0..223)
+ * with the frame tiles from map_tiles at 224+. It "surveys" outwards from the wanderer with the
+ * LCD on; unvisited chunks show the fog dither. */
 #pragma bank 255
 #include <gb/gb.h>
 #include <gb/cgb.h>
@@ -15,49 +16,54 @@
 #define MAP_T0     224          /* frame tiles live here */
 #define MAP_COLS   16
 #define MAP_ROWS   14
-#define MAP_ROW0   8            /* first chunk row shown */
+#define MAP_CX0    32           /* first chunk column / row shown (of 128) */
+#define MAP_CY0    36
 
-static const uint16_t paper_pal[4] = { 0x6FDE, 0x4F18, 0x2E31, 0x1486 };
+/* in RAM: pal.c (another bank) reads it */
+static uint16_t paper_pal[4] = { 0x6FBE, 0x4ED7, 0x2E10, 0x1485 };
 static uint8_t fog[16];
+/* chart inks: fog is paper (colour 0) with faint dots (1); pale land 1, land 2, sea 3 */
+static const uint8_t shade_col[4] = { 1, 2, 2, 3 };
 static uint8_t tbuf[16];
 static uint8_t line_n[144];
 
 static uint8_t map_xy(uint16_t mx, uint16_t my, uint8_t *sx, uint8_t *sy)
 {
-    int16_t cx = (int16_t)((int16_t)(mx - world.start.x) >> 3) + 64;
-    int16_t cy = (int16_t)((int16_t)(my - world.start.y) >> 3) + 64 - MAP_ROW0;
-    if (cx < 0 || cx >= 128 || cy < 0 || cy >= MAP_ROWS * 8) return 0;
-    *sx = (uint8_t)(16 + cx);
-    *sy = (uint8_t)(16 + cy);
+    int16_t cx = (int16_t)((int16_t)(mx - world.start.x) >> 3) + 64 - MAP_CX0;
+    int16_t cy = (int16_t)((int16_t)(my - world.start.y) >> 3) + 64 - MAP_CY0;
+    if (cx < 0 || cx >= MAP_COLS * 4 || cy < 0 || cy >= MAP_ROWS * 4) return 0;
+    *sx = (uint8_t)(16 + cx * 2 + 1);
+    *sy = (uint8_t)(16 + cy * 2 + 1);
     return 1;
 }
 
+/* one 8x8 map tile = 4x4 chunks, 2x2 px each */
 static void render_tile(uint8_t tx, uint8_t ty)
 {
-    uint8_t y, x, lo, hi, bits, s, cy;
-    uint16_t base_x = (uint16_t)(world.start.x - 512 + ((uint16_t)tx << 6) + 4);
-    uint16_t my;
-    for (y = 0; y < 8; y++) {
-        cy = (uint8_t)(MAP_ROW0 + (ty << 3) + y);
-        bits = visited[((uint16_t)cy << 4) | tx];
-        if (!bits) {
-            tbuf[y * 2] = fog[y * 2];
-            tbuf[y * 2 + 1] = fog[y * 2 + 1];
-            continue;
-        }
+    uint8_t r, c, y, cx0 = (uint8_t)(MAP_CX0 + (tx << 2)), cy, bits, s, lo, hi, m2;
+    uint8_t sh[4];
+    uint16_t mx0 = (uint16_t)(world.start.x - 512 + ((uint16_t)cx0 << 3) + 4), my;
+    for (r = 0; r < 4; r++) {
+        cy = (uint8_t)(MAP_CY0 + (ty << 2) + r);
+        bits = (uint8_t)(visited[((uint16_t)cy << 4) | (cx0 >> 3)] >> (cx0 & 7));
         my = (uint16_t)(world.start.y - 512 + ((uint16_t)cy << 3) + 4);
-        lo = fog[y * 2];
-        hi = fog[y * 2 + 1];
-        for (x = 0; x < 8; x++) {
-            if (!(bits & (1 << x))) continue;
-            s = world_map_shade((uint16_t)(base_x + ((uint16_t)x << 3)), my);
-            lo &= (uint8_t)~(0x80 >> x);
-            hi &= (uint8_t)~(0x80 >> x);
-            if (s & 1) lo |= (uint8_t)(0x80 >> x);
-            if (s & 2) hi |= (uint8_t)(0x80 >> x);
+        for (c = 0; c < 4; c++)
+            sh[c] = (bits & (1 << c)) ? shade_col[world_map_shade((uint16_t)(mx0 + ((uint16_t)c << 3)), my) & 3] : 0xFF;
+        for (y = (uint8_t)(r << 1); y < (uint8_t)((r << 1) + 2); y++) {
+            lo = fog[y * 2];
+            hi = fog[y * 2 + 1];
+            for (c = 0; c < 4; c++) {
+                s = sh[c];
+                if (s == 0xFF) continue;
+                m2 = (uint8_t)(0xC0 >> (c << 1));
+                lo &= (uint8_t)~m2;
+                hi &= (uint8_t)~m2;
+                if (s & 1) lo |= m2;
+                if (s & 2) hi |= m2;
+            }
+            tbuf[y * 2] = lo;
+            tbuf[y * 2 + 1] = hi;
         }
-        tbuf[y * 2] = lo;
-        tbuf[y * 2 + 1] = hi;
     }
     set_bkg_data((uint8_t)(ty * MAP_COLS + tx), 1, tbuf);
 }
@@ -128,6 +134,7 @@ void map_screen(void) BANKED
     wait_frames(1);
     /* tiles: frame set at 224, every map tile starts as fog */
     gfx_load_map(MAP_T0, fog);
+    for (i = 0; i < 8; i++) { fog[i * 2] = fog[i * 2 + 1]; fog[i * 2 + 1] = 0; }   /* colours 1,2 -> 0,1 */
     for (i = 0; i < MAP_COLS * MAP_ROWS; i++) set_bkg_data(i, 1, fog);
     frame_tiles();
     nx_scx = 0;
