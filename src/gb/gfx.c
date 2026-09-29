@@ -114,10 +114,13 @@ static void vbl_isr(void)
     if (is_cgb) VBK_REG = vbk;
     vbl_frames++;
     if (dbg_count_on) dbg_vbl_count++;
-    dbg_vbl_ly[0] = LY_REG;
+    { uint8_t l = LY_REG; l = (uint8_t)(l >= 144 ? l - 144 : l + 10); if (l > dbg_vbl_ly[0]) dbg_vbl_ly[0] = l; }
     __asm__("ei");
-    sound_tick();
-    dbg_vbl_ly[1] = LY_REG;
+    { uint8_t v0 = vbl_frames, l;
+      sound_tick();
+      l = LY_REG; l = (uint8_t)(l >= 144 ? l - 144 : l + 10);
+      if (v0 != vbl_frames) l = 255;
+      if (l > dbg_vbl_ly[1]) dbg_vbl_ly[1] = l; }
 }
 
 void frame_sync(void)

@@ -18,6 +18,8 @@ uint8_t land_job;
 uint16_t dbg_mt_calls;
 uint8_t land_changed;
 uint8_t dbg_hist[32];
+uint16_t dbg_mt_max, dbg_mt_mx, dbg_mt_my;
+#define TNOW2() ((uint16_t)((uint16_t)vbl_frames * 154u + (LY_REG >= 144 ? LY_REG - 154 : LY_REG)))
 
 static uint8_t job_i;
 static uint16_t job_c;          /* world column (col jobs) or row (row jobs) being built */
@@ -141,10 +143,10 @@ uint8_t land_update(uint16_t cmx, uint16_t cmy, uint8_t budget)
             else job_start(dy > 0 ? 3 : 4);
         }
         while (budget && job_i < 15) {
-            { uint8_t l0 = LY_REG, dl, v0 = vbl_frames;
+            { uint8_t l0 = LY_REG, dl, v0 = vbl_frames; uint16_t t0 = TNOW2();
             if (land_job <= 2) job_buf[job_i] = world_mt(job_c, (uint16_t)(land_y0 + job_i));
             else job_buf[job_i] = world_mt((uint16_t)(land_x0 + job_i), job_c);
-            dl = (uint8_t)(LY_REG - l0); if (dl > 153) dl += 154; if (v0 == vbl_frames) dbg_hist[dl > 30 ? 30 : dl]++; else dbg_hist[31]++; }
+            dl = (uint8_t)(LY_REG - l0); if (dl > 153) dl += 154; if (v0 == vbl_frames) dbg_hist[dl > 30 ? 30 : dl]++; else { uint16_t d = (uint16_t)(TNOW2() - t0); dbg_hist[31]++; if (d > dbg_mt_max) { dbg_mt_max = d; dbg_mt_mx = land_job <= 2 ? job_c : (uint16_t)(land_x0 + job_i - 1); dbg_mt_my = land_job <= 2 ? (uint16_t)(land_y0 + job_i - 1) : job_c; } } }
             job_i++;
             budget--;
             dbg_mt_calls++;
