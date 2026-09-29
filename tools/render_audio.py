@@ -75,8 +75,8 @@ def build_rom():
         f.write(MAIN_C)
     rom = os.path.join(BUILD, "sndtest.gb")
     src = os.path.join(ROOT, "src", "gb")
-    cmd = [LCC, "-I" + src, "-I" + os.path.join(ROOT, "src", "core"), "-Wl-j", "-o", rom, main,
-           os.path.join(src, "sound.c")]
+    cmd = [LCC, "-Wm-yt0x19", "-autobank", "-I" + src, "-I" + os.path.join(ROOT, "src", "core"),
+           "-Wl-j", "-o", rom, main, os.path.join(src, "sound.c"), os.path.join(src, "sound_core.c")]
     subprocess.check_call(cmd)
     return rom
 

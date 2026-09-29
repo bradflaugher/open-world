@@ -3,6 +3,7 @@
 #ifndef OW_GFX_H
 #define OW_GFX_H
 #include <stdint.h>
+#include <gb/gb.h>
 
 extern uint8_t is_cgb;
 extern volatile uint8_t vbl_frames;       /* +1 every VBlank */
@@ -41,18 +42,18 @@ extern uint8_t pal_fog;                   /* 0..8 contrast collapse */
 extern uint8_t pal_fade;                  /* 0..16 towards white */
 extern uint8_t pal_flash;                 /* 1: lightning (all light) */
 extern uint8_t pal_band_bright;           /* 0..16 band towards white (the ending) */
-void pal_apply(void);                     /* compute palettes into nx_* / CGB buffers */
-void pal_title(void);                     /* CGB: title palettes */
+void pal_apply(void) BANKED;                     /* compute palettes into nx_* / CGB buffers */
+void pal_title(void) BANKED;                     /* CGB: title palettes */
 void pal_upload_now(void);
-void pal_paper(const uint16_t *c4, uint8_t f);
-uint8_t shade_fade(uint8_t p, uint8_t f);  /* DMG palette p towards white (f 0..16) */
+void pal_paper(const uint16_t *c4, uint8_t f) BANKED;
+uint8_t shade_fade(uint8_t p, uint8_t f) BANKED;  /* DMG palette p towards white (f 0..16) */
 
 void gfx_init(void);
 void gfx_load_world_tiles(void);          /* BG world tileset + sprite tiles (LCD may be on) */
 void gfx_load_title(void);                /* title BG tiles/map/attr + sprite tiles */
 void gfx_load_map(uint8_t first, uint8_t *fog);  /* map frame tiles at `first`, fog pattern out */
 void hide_sprites_from(uint8_t first);
-void fade_to(uint8_t target, uint8_t speed); /* animate pal_fade (runs frames) */
+void fade_to(uint8_t target, uint8_t speed) BANKED; /* animate pal_fade (runs frames) */
 void wait_frames(uint8_t n);
 
 /* OAM helpers: sprites are built in oam[] and copied to shadow OAM by frame_commit */
