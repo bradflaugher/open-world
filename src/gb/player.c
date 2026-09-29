@@ -292,11 +292,9 @@ static void act(void)
                     if (it == IT_STONES) stones = STONES_MAX;
                     sfx_play(SFX_ITEM);
                     item_pulse = 120;
-                    /* the first time ever: a short wordless lesson in how to use it */
-                    {
-                        uint8_t h = (uint8_t)(it == IT_STONES ? HINT_STONES : HINT_CLOAK);
-                        if (!(hints & h)) { hints |= h; lesson_req = (uint8_t)(it + 1); }
-                    }
+                    /* the first time ever: a short wordless lesson in how to use it (its hint
+                       bit is set once it has played through: see lesson_owed) */
+                    if (!(hints & (it == IT_STONES ? HINT_STONES : HINT_CLOAK))) lesson_req = (uint8_t)(it + 1);
                     save_req = 1;
                     return;
                 }
@@ -444,7 +442,7 @@ void player_update(void) BANKED
         if (slow) spd = (uint8_t)(spd - (spd >> 2));
         if (keys & J_B) {
             if (run_t < 255) run_t++;
-            if (run_t >= RUN_LEARNT) hints |= HINT_RUN;
+            if (run_t >= RUN_LEARNT && !(hints & HINT_RUN)) { hints |= HINT_RUN; save_req = 1; }
         } else if (walk_t < 255) walk_t++;
         pure = (uint8_t)!(dx && dy);
         if (dx) {

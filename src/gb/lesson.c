@@ -313,6 +313,7 @@ void lesson_screen(uint8_t it) BANKED
         frame_commit();
         if (lesson_ready && (pressed & (J_A | J_B | J_START))) break;
     }
+    hints |= (uint8_t)(it == IT_CLOAK ? HINT_CLOAK : HINT_STONES);    /* seen: never again */
     sfx_play(SFX_SELECT);
     fade_to(16, 2);
     hide_sprites_from(0);

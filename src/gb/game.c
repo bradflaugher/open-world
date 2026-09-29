@@ -176,6 +176,14 @@ static void main_flush(void)
     if (save_req) { save_req = 0; save_write(); }
 }
 
+/* an item carried whose lesson was never played through (the power went off during it) */
+uint8_t lesson_owed(void) BANKED
+{
+    if ((items & (1 << IT_STONES)) && !(hints & HINT_STONES)) return IT_STONES + 1;
+    if ((items & (1 << IT_CLOAK)) && !(hints & HINT_CLOAK)) return IT_CLOAK + 1;
+    return 0;
+}
+
 void light_beacon(uint8_t i) BANKED
 {
     if (!edit_mt(world.beacon[i].x, world.beacon[i].y, MT_BEACON_LIT)) return;
@@ -666,7 +674,7 @@ void world_frame(void) BANKED
     PSTAGE(PF_PLAYER);
     dbg_stage = 2;
     if (ending_req) { request(REQ_ENDING); return; }
-    if (lesson_req) { request(REQ_LESSON); return; }
+    if (lesson_req && pl_state != PL_SLEEP) { request(REQ_LESSON); return; }   /* owed ones: once awake */
     camera_update();
     time_tick();
     PSTAGE(PF_TIME);
@@ -766,6 +774,8 @@ static void world_run(void)
             r = lesson_req;
             lesson_req = 0;
             lesson_screen((uint8_t)(r - 1));
+            save_req = 1;                 /* the lesson is marked seen only now */
+            lesson_req = lesson_owed();
             break;
         case REQ_TELEPORT:
             player_place(dbg_tx, dbg_ty);
@@ -945,6 +955,7 @@ void game_main(void) BANKED
             if (items & (1 << IT_STONES)) stones = STONES_MAX;   /* older saves: the pouch is endless now */
             heart_revealed = (uint8_t)(beacons_lit == 7);
             ambient_seed(world.seed);
+            lesson_req = lesson_owed();
         } else {
             new_world(fresh_seed());
             save_write();

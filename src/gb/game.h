@@ -58,7 +58,8 @@ extern uint8_t hints;
 #define HINT_STONES  0x02   /* the stones' lesson was shown */
 #define HINT_CLOAK   0x04   /* the cloak's lesson was shown */
 extern uint8_t lesson_req;           /* IT_x + 1: show that item's lesson (a shrine was taken) */
-void lesson_screen(uint8_t it) BANKED;
+void lesson_screen(uint8_t it) BANKED;   /* sets the item's hint bit once it has played through */
+uint8_t lesson_owed(void) BANKED;        /* IT_x + 1 for an item carried but never taught, or 0 */
 extern uint8_t band_mark_x[5];
 
 /* test hooks */

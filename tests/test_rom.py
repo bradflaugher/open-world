@@ -667,6 +667,7 @@ class RomTest(Base):
         g.face('left')
         # a save with the wanderer away from the fire: build a cairn needs stones; light instead
         g.set_u8('items', 3)
+        g.set_u8('hints', HINT_STONES)       # (granted, not taken: no lesson owed)
         g.set_u8('equipped', IT_STONES)
         g.set_u8('stones', 5)
         g.hold(['down'], 30)
@@ -1014,6 +1015,19 @@ class RomTest(Base):
         g.run(60)
         g.press('a', after=10)
         self.assertEqual(g.state(), GS_LESSON, 'closed before it had played through')
+        self.assertEqual(g.u8('hints') & HINT_STONES, 0, 'marked seen before it played through')
+        # the power goes off mid-lesson: the item is saved, and the lesson is owed on continuing
+        cut = Game(self.CGB, g.sram())
+        try:
+            cut.boot_to_title()
+            cut.press('a')
+            self.assertTrue(cut.wait(lambda: cut.state() == GS_WORLD and cut.u8('pal_fade') == 0, 3000))
+            self.assertTrue(cut.u8('items') & (1 << IT_STONES))
+            cut.wake()
+            cut.close_lesson()
+            self.assertEqual(cut.u8('hints') & HINT_STONES, HINT_STONES)
+        finally:
+            cut.stop()
         g.shot('lesson_stones')
         g.close_lesson()
         self.assertEqual(g.u8('hints') & HINT_STONES, HINT_STONES)
@@ -1065,6 +1079,9 @@ class RomTest(Base):
         g.pb.button_release('b')
         g.pb.button_release('left')
         self.assertTrue(g.u8('hints') & HINT_RUN)
+        g.run(20)
+        n = g.u16('dbg_save_len')
+        self.assertTrue(g.sram()[n - 1] & HINT_RUN, 'retiring it was not saved')
         g.hold(['right'], 200)
         self.assertEqual(g.u8('run_hint_on'), 0, 'the run hint came back')
 
