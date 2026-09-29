@@ -86,8 +86,8 @@ void spr_set_f(uint8_t i, uint8_t x, uint8_t y, uint8_t tile, uint8_t prop);
 
 /* sprite slots */
 #define SP_PLAYER   0   /* 2 */
-#define SP_HINT     2
-#define SP_FX       3   /* 2: glide shadow, sparks */
+#define SP_HINT     2   /* 1, or 3 for the SELECT hint (over SP_FX: never while gliding); +2: hold B */
+#define SP_FX       3   /* glide shadow */
 #define SP_GLOW     5   /* 8 */
 #define SP_WATCH    13  /* 4 */
 #define SP_PIPS     17  /* 4 */

@@ -43,7 +43,7 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-GS_BOOT, GS_TITLE, GS_WORLD, GS_MAP, GS_ENDING, GS_WHITEOUT = range(6)
+GS_BOOT, GS_TITLE, GS_WORLD, GS_MAP, GS_ENDING, GS_WHITEOUT, GS_LESSON = range(7)
 PL_SLEEP, PL_STAND, PL_WALK, PL_SIT, PL_GLIDE = range(5)
 PH_DAWN, PH_DAY, PH_DUSK, PH_NIGHT = range(4)
 PHASE_NAMES = ('dawn', 'day', 'dusk', 'night')
@@ -962,7 +962,30 @@ class Pilot:
         self.press('a', 2, 12)
         after = self.mods().get(target)
         self.event('interact', what=what, target=target, before=before, after=after)
+        self.close_lesson()
         return after != before
+
+    def close_lesson(self):
+        """The first time an item is taken, a short wordless lesson plays. It closes with A
+        once it has played through (a bobbing A appears in the corner)."""
+        for _ in range(10):
+            if self.state() == GS_LESSON:
+                break
+            self.tick()
+        if self.state() != GS_LESSON:
+            return
+        f0 = self.frame_n
+        for _ in range(3000):
+            if self.u8('lesson_ready'):
+                break
+            self.tick()
+        self.press('a', 2, 2)
+        for _ in range(3000):
+            if self.state() == GS_WORLD and self.u8('pal_fade') == 0:
+                break
+            self.tick()
+        assert self.state() == GS_WORLD, f'the lesson did not close: state {self.state()} ready {self.u8("lesson_ready")} held {self.held} fade {self.u8("pal_fade")}'
+        self.event('lesson', frames=self.frame_n - f0)
 
     def follow(self, path, allow_night=True, watch=True):
         """Follow a plan from plan(). Straight runs of walking are merged; special cells

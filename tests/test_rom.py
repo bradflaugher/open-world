@@ -21,7 +21,8 @@ ASSETS_H = os.path.join(ROOT, 'src', 'gb', 'assets.h')
 WORLD_H = os.path.join(ROOT, 'src', 'core', 'world.h')
 SHOTS = os.path.join(ROOT, 'build', 'screens')
 
-GS_BOOT, GS_TITLE, GS_WORLD, GS_MAP, GS_ENDING, GS_WHITEOUT = range(6)
+GS_BOOT, GS_TITLE, GS_WORLD, GS_MAP, GS_ENDING, GS_WHITEOUT, GS_LESSON = range(7)
+HINT_RUN, HINT_STONES, HINT_CLOAK = 1, 2, 4
 PL_SLEEP, PL_STAND, PL_WALK, PL_SIT, PL_GLIDE = range(5)
 PH_DAWN, PH_DAY, PH_DUSK, PH_NIGHT = range(4)
 WX_CLEAR, WX_RAIN, WX_SNOW, WX_FOG, WX_STORM = range(5)
@@ -70,6 +71,15 @@ def expected_tiles(grid, x, y, mt_tiles, edge_t):
         if v >= 0:
             t[q] = edge_t[cls * 16 + q * 4 + v]
     return tuple(t)
+
+
+def anim_tiles():
+    """the BG tiles the VBlank animates (anim_tile[] in the generated assets.c)"""
+    with open(os.path.join(ROOT, 'src', 'gb', 'assets.c')) as f:
+        for line in f:
+            if line.startswith('const uint8_t anim_tile['):
+                return {int(v) for v in line.split('{')[1].split('}')[0].split(',')}
+    return set()
 
 
 def owgen(*args):
@@ -210,6 +220,29 @@ class Game:
         self.set_u8('dbg_teleport', 1)
         assert self.wait(lambda: self.u8('dbg_teleport') == 0, 200)
         self.run(8)
+
+    def close_lesson(self):
+        """A shrine was just taken for the first time: its lesson plays through, then A closes it."""
+        assert self.wait(lambda: self.state() == GS_LESSON, 30), 'no lesson'
+        assert self.wait(lambda: self.u8('lesson_ready'), 1500), 'the lesson never finished'
+        self.press('a')
+        assert self.wait(lambda: self.state() == GS_WORLD and self.u8('pal_fade') == 0, 1500)
+        self.run(4)
+
+    def oam(self, i):
+        """sprite i as (y, x, tile) plus the tiles of the next two slots (all from real OAM)"""
+        m = self.pb.memory
+        return (m[0xFE00 + i * 4], m[0xFE00 + i * 4 + 1], m[0xFE00 + i * 4 + 2],
+                m[0xFE00 + i * 4 + 6], m[0xFE00 + i * 4 + 10])
+
+    def spr_tile(self, name):
+        """a sprite tile number from the generated assets.h"""
+        with open(ASSETS_H) as f:
+            for line in f:
+                p = line.split()
+                if len(p) >= 3 and p[0] == '#define' and p[1] == name:
+                    return int(p[2])
+        raise KeyError(name)
 
     def face(self, d):
         """Turn to face direction d ('up' ...) with a tap too short to move far."""
@@ -408,13 +441,16 @@ class RomTest(Base):
             spr = self.sprite_columns(range(20, 28))
             for ly in range(20, 28):
                 for x in range(160):
-                    if (ly, x) in spr:
+                    if (ly, x) in spr or exp[ly][x] is None:
                         continue
                     self.assertEqual(img[ly][x][0], exp[ly][x], f'line {ly} x {x} differs')
 
     def render_bg_lines(self, lines):
+        """the BG as VRAM says it is now; None where an animated tile is (the VBlank may have
+        moved it on a frame since the screen was drawn)"""
         g, m = self.g, self.g.pb.memory
         shades = (255, 153, 85, 0)     # PyBoy's default DMG palette
+        anim = anim_tiles()
         out = {}
         for ly in lines:
             band = ly < 24
@@ -427,6 +463,9 @@ class RomTest(Base):
             for x in range(160):
                 px = (scx + x) & 255
                 t = m[base + (y >> 3) * 32 + (px >> 3)]
+                if not band and t in anim:
+                    row.append(None)
+                    continue
                 ta = 0x9000 + t * 16 if t < 128 else 0x8800 + (t - 128) * 16
                 lo, hi = m[ta + (y & 7) * 2], m[ta + (y & 7) * 2 + 1]
                 bit = 7 - (px & 7)
@@ -505,6 +544,7 @@ class RomTest(Base):
         # shrine 0 holds the stones
         self.stand_next_to(w['shrine'][0])
         g.press('a', after=10)
+        g.close_lesson()
         self.assertTrue(g.u8('items') & (1 << IT_STONES))
         self.assertEqual(g.u8('equipped'), IT_STONES)
         self.assertEqual(g.u8('stones'), 12)
@@ -946,6 +986,141 @@ class RomTest(Base):
         shades = [(bgp >> (2 * c)) & 3 for c in range(4)]
         self.assertNotEqual(shades[1], shades[2], 'fog merged ground and detail')
         g.shot('fog')
+
+    # ---- hints and lessons
+    def shallow_side(self, center, r=7):
+        """Teleport next to a shallows cell near center and face it."""
+        g = self.g
+        reg = host_region(self.SEED, center[0] - r, center[1] - r, 2 * r + 1, 2 * r + 1)
+        for s, v in sorted(reg.items()):
+            if v != MT['MT_SHALLOW']:
+                continue
+            for d, (dx, dy) in DIRV.items():
+                a = (s[0] - dx, s[1] - dy)
+                if a in reg and self.walkable(reg[a]):
+                    g.teleport(*a)
+                    g.face(d)
+                    return s
+        self.fail('no shallows')
+
+    def test_lessons_play_once_and_are_saved(self):
+        g = self.g
+        g.new_world(self.SEED)
+        w = g.world()
+        self.assertEqual(g.u8('hints'), 0)
+        self.stand_next_to(w['shrine'][0])
+        g.press('a', after=4)
+        self.assertTrue(g.wait(lambda: g.state() == GS_LESSON, 30))
+        g.run(60)
+        g.press('a', after=10)
+        self.assertEqual(g.state(), GS_LESSON, 'closed before it had played through')
+        g.shot('lesson_stones')
+        g.close_lesson()
+        self.assertEqual(g.u8('hints') & HINT_STONES, HINT_STONES)
+        self.assertEqual(g.u8('equipped'), IT_STONES)       # the lesson's SELECTs are only shown
+        self.assertEqual(g.u8('dbg_lessons'), 1)
+        self.check_land('after the lesson')
+        self.stand_next_to(w['shrine'][1])
+        g.press('a', after=4)
+        g.run(200)
+        g.shot('lesson_cloak')
+        g.close_lesson()
+        self.assertEqual(g.u8('hints') & (HINT_STONES | HINT_CLOAK), HINT_STONES | HINT_CLOAK)
+        self.assertEqual(g.u8('equipped'), IT_CLOAK)
+        g.set_u8('save_req', 1)
+        g.run(20)
+        # a new world over the save (hold SELECT on the title): the lessons are not shown again
+        sram = g.sram()
+        g.stop()
+        self.g = g = Game(self.CGB, sram)
+        g.boot_to_title()
+        g.pb.button_press('select')
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 3000))
+        g.pb.button_release('select')
+        g.run(40)
+        g.wake()
+        self.assertEqual(g.u8('hints') & 6, 6)
+        w = g.world()
+        self.SEED = w['seed']
+        self.stand_next_to(w['shrine'][0])
+        g.press('a', after=30)
+        self.assertTrue(g.u8('items') & (1 << IT_STONES))
+        self.assertEqual(g.state(), GS_WORLD)
+        self.assertEqual(g.u8('dbg_lessons'), 0)
+
+    def test_run_hint_until_the_first_run(self):
+        g = self.g
+        g.new_world(self.SEED)
+        slot = 4 * 4
+        g.pb.button_press('left')
+        g.run(60)
+        self.assertEqual(g.u8('run_hint_on'), 0, 'too soon')
+        g.run(120)
+        self.assertEqual(g.u8('run_hint_on'), 1)
+        self.assertNotEqual(g.pb.memory[0xFE00 + slot], 0)
+        self.assertEqual(g.pb.memory[0xFE00 + slot + 2], g.spr_tile('SPR_HINT_B'))
+        g.shot('run_hint')
+        g.pb.button_press('b')
+        g.run(40)
+        g.pb.button_release('b')
+        g.pb.button_release('left')
+        self.assertTrue(g.u8('hints') & HINT_RUN)
+        g.hold(['right'], 200)
+        self.assertEqual(g.u8('run_hint_on'), 0, 'the run hint came back')
+
+    def test_select_hint_when_another_item_would_act(self):
+        g = self.g
+        g.new_world(self.SEED)
+        g.set_u8('hints', 0xFF)
+        g.set_u8('items', (1 << IT_LANTERN) | (1 << IT_STONES))
+        g.set_u8('equipped', IT_LANTERN)
+        self.shallow_side(g.world()['beacon'][1])
+        g.run(6)
+        # (read from OAM: hint_on itself may be caught mid game frame)
+        self.assertEqual(g.oam(2)[2:], (g.spr_tile('SPR_HINT_SEL'), g.spr_tile('SPR_HINT_SEL') + 2,
+                                        g.spr_tile('SPR_HINT_SEL') + 4))
+        g.shot('select_hint')
+        g.press('select', after=6)
+        self.assertEqual(g.u8('equipped'), IT_STONES)
+        self.assertEqual(g.oam(2)[2], g.spr_tile('SPR_HINT_A'))
+        self.assertEqual(g.pb.memory[0xFE00 + 3 * 4], 0, 'the SELECT hint is still shown')
+
+    def test_version_2_save_still_loads(self):
+        g = self.g
+        g.new_world(self.SEED)
+        g.face('up')
+        g.press('a', after=10)                  # light the fire: a save
+        g.set_u8('items', 3)
+        g.set_u8('save_req', 1)
+        g.run(20)
+        pos = g.pos()
+        n = g.u16('dbg_save_len')
+        sram = bytearray(g.sram())
+        g.stop()
+        # the same save as a version 2 copy: no hints byte at the end
+        for base in (0, 0x1000):
+            sram[base + 2] = 2
+            a, b = 0x5A, 0xA5
+            for x in sram[base:base + n - 1]:
+                a = (a + x) & 0xFF
+                b = (b + a) & 0xFF
+            sram[base + n - 1] = a
+            sram[base + n] = b
+        self.g = g = Game(self.CGB, bytes(sram))
+        g.boot_to_title()
+        g.press('a')
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 3000))
+        self.assertEqual(g.world()['seed'], self.SEED)
+        self.assertEqual(g.pos(), pos)
+        self.assertEqual(g.u8('hints'), HINT_STONES)    # carried items count as taught
+        g.wake()
+        self.check_land('continued from a v2 save')
+        g.set_u8('save_req', 1)
+        g.run(20)
+        sram = g.sram()
+        for base in (0, 0x1000):
+            self.assertEqual(sram[base + 2], 3)
+            self.assertTrue(save_copy_valid(sram, base, n))
 
     def test_no_frame_drops_walking(self):
         g = self.g

@@ -8,7 +8,7 @@
 #include "game.h"
 #include "gfx.h"
 
-#define SAVE_VERSION 2   /* 2: 16x16-metatile visited chunks */
+#define SAVE_VERSION 3   /* 2: 16x16-metatile visited chunks; 3: + the hints byte at the end */
 #define SRAM_PRIMARY ((uint8_t *)0xA000)
 #define SRAM_BACKUP  ((uint8_t *)0xB000)
 
@@ -26,7 +26,8 @@ typedef struct {
     uint8_t cairn_n, old_n, mod_n;
 } save_hdr_t;
 
-#define SAVE_LEN (sizeof(save_hdr_t) + sizeof(cairns) + sizeof(world_old_cairns) + sizeof(world_mods) + sizeof(visited))
+#define SAVE_LEN_V2 (sizeof(save_hdr_t) + sizeof(cairns) + sizeof(world_old_cairns) + sizeof(world_mods) + sizeof(visited))
+#define SAVE_LEN (SAVE_LEN_V2 + 1)      /* v3 appends `hints`, so a v2 save still loads */
 typedef char save_fits[(SAVE_LEN + 2 <= 0x1000) ? 1 : -1];
 uint16_t dbg_save_len = SAVE_LEN;   /* tests: bytes per copy before the checksum */
 
@@ -68,6 +69,7 @@ static void write_copy(uint8_t *base, const uint8_t *cairn_snap)
     d = put(d, world_old_cairns, sizeof world_old_cairns);
     d = put(d, world_mods, sizeof world_mods);
     d = put(d, visited, sizeof visited);
+    *d++ = hints;
     c = cks(base, (uint16_t)SAVE_LEN);
     d[0] = (uint8_t)c;
     d[1] = (uint8_t)(c >> 8);
@@ -117,14 +119,19 @@ void save_write(void) BANKED
     dbg_saves++;
 }
 
-static uint8_t copy_valid(const uint8_t *base)
+/* the length of a valid copy (before its checksum), 0 if the copy is not valid */
+static uint16_t copy_len(const uint8_t *base)
 {
-    uint16_t c;
+    uint16_t c, n;
     const save_hdr_t *h = (const save_hdr_t *)base;
-    if (h->magic[0] != 'O' || h->magic[1] != 'W' || h->version != SAVE_VERSION) return 0;
-    c = cks(base, (uint16_t)SAVE_LEN);
-    return (uint8_t)(base[SAVE_LEN] == (uint8_t)c && base[SAVE_LEN + 1] == (uint8_t)(c >> 8));
+    if (h->magic[0] != 'O' || h->magic[1] != 'W') return 0;
+    if (h->version == SAVE_VERSION) n = (uint16_t)SAVE_LEN;
+    else if (h->version == 2) n = (uint16_t)SAVE_LEN_V2;
+    else return 0;
+    c = cks(base, n);
+    return (uint16_t)(base[n] == (uint8_t)c && base[n + 1] == (uint8_t)(c >> 8) ? n : 0);
 }
+#define copy_valid(b) (copy_len(b) != 0)
 
 static uint8_t *which_valid(void)
 {
@@ -154,10 +161,13 @@ uint8_t save_load(void) BANKED
     memcpy(cairns, s, sizeof cairns); s += sizeof cairns;
     memcpy(world_old_cairns, s, sizeof world_old_cairns); s += sizeof world_old_cairns;
     memcpy(world_mods, s, sizeof world_mods); s += sizeof world_mods;
-    memcpy(visited, s, sizeof visited);
+    memcpy(visited, s, sizeof visited); s += sizeof visited;
+    /* a v2 save had no hints: lessons for the items already carried were never needed */
+    hints = hdr.version == SAVE_VERSION ? *s :
+            (uint8_t)((hdr.items & (1 << IT_STONES) ? HINT_STONES : 0) | (hdr.items & (1 << IT_CLOAK) ? HINT_CLOAK : 0));
     /* repair whichever copy is damaged (a write torn by a power cut) from the good one */
-    if (!copy_valid(SRAM_PRIMARY)) memcpy(SRAM_PRIMARY, SRAM_BACKUP, SAVE_LEN + 2);
-    else if (!copy_valid(SRAM_BACKUP)) memcpy(SRAM_BACKUP, SRAM_PRIMARY, SAVE_LEN + 2);
+    if (!copy_valid(SRAM_PRIMARY)) memcpy(SRAM_PRIMARY, SRAM_BACKUP, copy_len(SRAM_BACKUP) + 2);
+    else if (!copy_valid(SRAM_BACKUP)) memcpy(SRAM_BACKUP, SRAM_PRIMARY, copy_len(SRAM_PRIMARY) + 2);
     DISABLE_RAM;
     pl_mx = hdr.mx; pl_my = hdr.my;
     pl_sx = hdr.sx; pl_sy = hdr.sy; pl_face = hdr.face;

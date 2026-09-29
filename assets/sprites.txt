@@ -262,24 +262,25 @@
 ........
 ........
 
-# press-A pictogram: a round button with a finger pressing it (no letters)
+# press-A pictogram: a finger pressing a button marked A (the only letters in the world are
+# the names of the buttons)
 @sprite SPR_HINT_A
 ...#....
 ..#o#...
 ..#o#...
 ..#o###.
-..#oooo#
 .##oooo#
-.#oooo#.
-..####..
-........
-..####..
-.#++++#.
-#+oooo+#
-#+oooo+#
-.#++++#.
-..####..
-........
+.#ooooo#
+..#####.
+.######.
+#oooooo#
+#oo##oo#
+#o#oo#o#
+#o####o#
+#o#oo#o#
+#o#oo#o#
+#oooooo#
+.######.
 
 # ---- markers on the horizon band (8x16, base at the bottom) ----
 @sprite SPR_BAND_BEACON
@@ -555,3 +556,43 @@ ooooooo.
 ........
 ........
 ........
+
+# ---- hints (appended: the art above keeps its VRAM places) ----
+# hold-B pictogram (run): the same finger on a button marked B
+@sprite SPR_HINT_B
+...#....
+..#o#...
+..#o#...
+..#o###.
+.##oooo#
+.#ooooo#
+..#####.
+.######.
+#oooooo#
+#o###oo#
+#o#oo#o#
+#o###oo#
+#o#oo#o#
+#o###oo#
+#oooooo#
+.######.
+
+# SELECT pictogram (switch the item in hand): the pill and its label, 24x16 (three 8x16 sprites:
+# +0, +2, +4)
+@sprite SPR_HINT_SEL
+.........########.......
+........#++oooo++#......
+........#++++++++#......
+.........########.......
+........................
+........................
+.oooooooooooooooooooooo.
+oooooooooooooooooooooooo
+o###o###o#oo###o###o###o
+o#ooo#ooo#oo#ooo#oooo#oo
+o###o##oo#oo##oo#oooo#oo
+ooo#o#ooo#oo#ooo#oooo#oo
+o###o###o##o###o###oo#oo
+oooooooooooooooooooooooo
+.oooooooooooooooooooooo.
+........................

@@ -23,7 +23,7 @@ BANKREF_EXTERN(assets)
 #define ASSETS_BANKED 1
 
 /* ---- world BG tileset (load with set_bkg_data(0, BG_TILE_COUNT, bg_tiles)) ---- */
-#define BG_TILE_COUNT  198    /* <= 224 */
+#define BG_TILE_COUNT  197    /* <= 224 */
 extern const uint8_t bg_tiles[];              /* BG_TILE_COUNT * 16 bytes, 2bpp */
 extern const uint8_t mt_tiles[MT_COUNT][4];   /* bg tile index TL, TR, BL, BR */
 extern const uint8_t mt_attr[MT_COUNT][4];    /* CGB attribute: palette class (PAL_*), no flips */
@@ -39,18 +39,19 @@ enum { EDGE_H, EDGE_V, EDGE_OUTER, EDGE_INNER, EDGE_VARIANT_COUNT };
 extern const uint8_t edge_tiles[EDGE_CLASS_COUNT][4][EDGE_VARIANT_COUNT];
 
 /* Animated BG tiles: every ANIM_PERIOD frames copy anim_frames[i][f] into bg tile
-   anim_tile[i], f = 0..ANIM_FRAMES-1 cycling. Entries: 0=SEA, 1=GLINT, 2=FIRE_L, 3=FIRE_R, 4=BEACON_L, 5=BEACON_R, 6=HEART_L, 7=HEART_R. */
-#define ANIM_COUNT   8
+   anim_tile[i], f = 0..ANIM_FRAMES-1 cycling. Entries: 0=SEA, 1=GLINT, 2=SHALLOW, 3=FIRE_L, 4=FIRE_R, 5=BEACON_L, 6=BEACON_R, 7=HEART_L, 8=HEART_R. */
+#define ANIM_COUNT   9
 #define ANIM_FRAMES  4
 #define ANIM_PERIOD  16
 #define ANIM_SEA      0   /* bg tile 1 */
 #define ANIM_GLINT    1   /* bg tile 2 */
-#define ANIM_FIRE_L   2   /* bg tile 3 */
-#define ANIM_FIRE_R   3   /* bg tile 4 */
-#define ANIM_BEACON_L 4   /* bg tile 5 */
-#define ANIM_BEACON_R 5   /* bg tile 6 */
-#define ANIM_HEART_L  6   /* bg tile 7 */
-#define ANIM_HEART_R  7   /* bg tile 8 */
+#define ANIM_SHALLOW  2   /* bg tile 3 */
+#define ANIM_FIRE_L   3   /* bg tile 4 */
+#define ANIM_FIRE_R   4   /* bg tile 5 */
+#define ANIM_BEACON_L 5   /* bg tile 6 */
+#define ANIM_BEACON_R 6   /* bg tile 7 */
+#define ANIM_HEART_L  7   /* bg tile 8 */
+#define ANIM_HEART_R  8   /* bg tile 9 */
 extern const uint8_t anim_tile[ANIM_COUNT];
 extern const uint8_t anim_frames[ANIM_COUNT][ANIM_FRAMES][16];
 
@@ -59,14 +60,14 @@ extern const uint8_t anim_frames[ANIM_COUNT][ANIM_FRAMES][16];
    faintly visible when night crushes sky and land together. */
 #define BAND_SKY_TOP     0  /* plain sky, row 0 */
 #define BAND_SKY         0  /* plain sky, rows 1-2 (also bg tile 0) */
-#define BAND_STAR0       139  /* sky + star (colour 0); variant BAND_STAR0+1 */
-#define BAND_LAND        141  /* solid distant land */
-#define BAND_RIDGE0      142  /* +k (k=0..7): land fills the bottom k+1 rows, flat top */
-#define BAND_SLOPE_UP0   150  /* +k: rises left->right 1 px/px from height k+1 at the left edge */
-#define BAND_SLOPE_DN0   158  /* +k: falls left->right to height k+1 at the right edge */
+#define BAND_STAR0       138  /* sky + star (colour 0); variant BAND_STAR0+1 */
+#define BAND_LAND        140  /* solid distant land */
+#define BAND_RIDGE0      141  /* +k (k=0..7): land fills the bottom k+1 rows, flat top */
+#define BAND_SLOPE_UP0   149  /* +k: rises left->right 1 px/px from height k+1 at the left edge */
+#define BAND_SLOPE_DN0   157  /* +k: falls left->right to height k+1 at the right edge */
 
 /* ---- sprites: 8x16 OBJ tiles (LCDC.2 = 1), load at 0x8000 ---- */
-#define SPR_TILE_COUNT 84    /* <= 128 */
+#define SPR_TILE_COUNT 92    /* <= 128 */
 extern const uint8_t spr_tiles[];
 /* Player frames are 16x16 = two 8x16 sprites: constant = LEFT half, right half = +2.
    Side frames face RIGHT (X-flip and swap halves for left). */
@@ -111,6 +112,8 @@ extern const uint8_t spr_tiles[];
 #define SPR_MAP_BEACON       78
 #define SPR_MAP_CAIRN        80
 #define SPR_MAP_HEART        82
+#define SPR_HINT_B           84
+#define SPR_HINT_SEL         86
 
 /* ---- palettes ---- */
 /* DMG, indexed by PH_DAWN, PH_DAY, PH_DUSK, PH_NIGHT (sound.h). Colour index -> shade

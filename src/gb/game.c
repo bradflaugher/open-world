@@ -31,6 +31,7 @@ uint8_t idle_t, item_pulse, shake;
 int8_t shake_x, shake_y;
 uint8_t heart_revealed, glow_on;
 uint8_t hint_x, hint_y, hint_on;
+uint8_t hints;
 uint16_t dbg_seed;
 uint8_t dbg_teleport;
 uint16_t dbg_tx, dbg_ty;
@@ -520,6 +521,8 @@ void world_enter(uint8_t fresh) BANKED
     band_reset_angle();
     fx_redraw();
     watchers_reset();
+    hint_on = 0;              /* the hints are worked out again by the first game frame */
+    run_hint_on = 0;
     scan_warm();
     visit_mark();
     anim_on = 1;
@@ -579,6 +582,7 @@ static void ending(void)
     pl_state = PL_SIT;
     pl_face = D_N;
     hint_on = 0;
+    run_hint_on = 0;
     ambient_mode(AMB_ENDING);
     ambient_beacons(7);
     for (i = 0; i < 240; i++) {
@@ -603,7 +607,7 @@ static void ending(void)
 }
 
 /* ---------------------------------------------------------------- the world loop */
-enum { REQ_NONE = 0, REQ_MAP, REQ_WHITEOUT, REQ_ENDING, REQ_TELEPORT, REQ_REFILL };
+enum { REQ_NONE = 0, REQ_MAP, REQ_WHITEOUT, REQ_ENDING, REQ_TELEPORT, REQ_REFILL, REQ_LESSON };
 volatile uint8_t world_req;
 uint16_t dbg_stalls, dbg_late;
 volatile uint8_t dbg_stage;
@@ -662,6 +666,7 @@ void world_frame(void) BANKED
     PSTAGE(PF_PLAYER);
     dbg_stage = 2;
     if (ending_req) { request(REQ_ENDING); return; }
+    if (lesson_req) { request(REQ_LESSON); return; }
     camera_update();
     time_tick();
     PSTAGE(PF_TIME);
@@ -756,6 +761,11 @@ static void world_run(void)
             break;
         case REQ_ENDING:
             ending();
+            break;
+        case REQ_LESSON:
+            r = lesson_req;
+            lesson_req = 0;
+            lesson_screen((uint8_t)(r - 1));
             break;
         case REQ_TELEPORT:
             player_place(dbg_tx, dbg_ty);
