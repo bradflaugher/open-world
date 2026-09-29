@@ -1,0 +1,106 @@
+# OPEN WORLD palettes.
+#
+# DMG shades: 0 white, 1 light grey, 2 dark grey, 3 black.  BGP byte = s0 | s1<<2 | s2<<4 | s3<<6
+# where sN is the shade shown for colour index N.  Colour 0 is LIGHT and is white in every phase.
+#
+#   dawn  0xA4  0->0 1->1 2->2 3->2   haze: nothing is black yet; the land is lifted and soft.
+#   day   0xE4  identity.
+#   dusk  0xF4  0->0 1->1 2->3 3->3   long shadows: detail hardens into black silhouettes, the
+#                                     sea (colour 2) goes dark, the ground still holds the light.
+#   night 0xF8  0->0 1->2 2->3 3->3   the ground sinks one step to dark grey (the terrain stays
+#                                     legible: paths, sand, snow, clearings), everything that has
+#                                     form becomes black silhouette, and only colour 0 is bright:
+#                                     fires, beacons, stars, glints, the Heart.
+# On the band the sky is colour 1 and the far land colour 3, so the skyline survives every phase
+# (at night: black mountains under a dark-grey sky, stars in white).
+#
+# OBP0 (figures) 1->0 2->2 3->3 by day / dawn (0xE0); dusk/night 2->1 (0xD0): the cloak's rim
+#      catches the light so the wanderer's black silhouette stays readable on dark ground.
+# OBP1 (lights)  1->0 2->1 3->2 (0x90) always: pips, lantern glow, rain, Watchers, lit beacon.
+@dmg dawn  bgp=0xA4 obp0=0xE0 obp1=0x90
+@dmg day   bgp=0xE4 obp0=0xE0 obp1=0x90
+@dmg dusk  bgp=0xF4 obp0=0xD0 obp1=0x90
+@dmg night bgp=0xF8 obp0=0xD0 obp1=0x90
+
+# ---- CGB BG palettes: @bgpal PHASE CLASS light ground detail shadow ------------------------
+# DAY: an overcast northern moor. Muted sage, slate water, bone sand, lichen rock.
+@bgpal day GRASS   #f6efd6 #a3a97f #66704f #2c3226
+@bgpal day FOREST  #f6efd6 #8b9668 #4f5d3c #1f2a22
+@bgpal day WATER   #f8f6e8 #a9bdb8 #56727a #283c4c
+@bgpal day SAND    #fbf3dc #d6c79e #a18f68 #574a38
+@bgpal day SNOW    #ffffff #dfe5e8 #97a4ae #394452
+@bgpal day ROCK    #fff4dc #a39e94 #67635f #292829
+@bgpal day LIGHT   #fff6c8 #a3a97f #b8743e #3a2c24
+@bgpal day SKY     #ffffff #cdd6dc #767e8c #3e4454
+
+# DAWN: rose and pale gold; the shadows have not yet hardened (lifted blacks).
+@bgpal dawn GRASS  #fff2d8 #b9b08e #857d70 #4e4855
+@bgpal dawn FOREST #fff2d8 #a19f80 #6c6c64 #3e3c4a
+@bgpal dawn WATER  #fff4e4 #c4bcbc #7c7a8c #4a4862
+@bgpal dawn SAND   #fff4dc #e4cfaa #b59a80 #6c5a5a
+@bgpal dawn SNOW   #ffffff #eee0e0 #b6a8b4 #5c5468
+@bgpal dawn ROCK   #fff2e0 #b4a6a0 #847a7c #4a4250
+@bgpal dawn LIGHT  #fff6d0 #b9b08e #d08c58 #4e3c3c
+@bgpal dawn SKY    #fff8e8 #f2d2c6 #a88c96 #564a5e
+
+# DUSK: ember and violet; the sun is behind the hills and every form is a silhouette.
+@bgpal dusk GRASS  #ffe6b0 #9c8a72 #4c3a48 #1e1422
+@bgpal dusk FOREST #ffe6b0 #85786a #3c2e40 #180f1c
+@bgpal dusk WATER  #ffe0a8 #a08c8c #4a3656 #1c1428
+@bgpal dusk SAND   #ffe8b8 #c49c78 #6e4a4a #281a20
+@bgpal dusk SNOW   #fff0dc #c8aab0 #6c5270 #221830
+@bgpal dusk ROCK   #ffe4b0 #8c7c78 #463444 #1a1220
+@bgpal dusk LIGHT  #ffe8a0 #9c8a72 #d0703a #24141a
+@bgpal dusk SKY    #ffe8b8 #e0946c #6a3c52 #20121e
+
+# NIGHT: indigo. The ground is a faint blue-grey so the land can still be read; the light
+# (colour 0) stays warm and luminous; water glints are cold moonlight.
+@bgpal night GRASS  #ffd890 #2e3650 #161a30 #0a0c1a
+@bgpal night FOREST #ffd890 #28304a #12162a #080a16
+@bgpal night WATER  #d8e8ff #2a3456 #121832 #080a1a
+@bgpal night SAND   #ffd890 #3a4058 #1a1e34 #0a0c1a
+@bgpal night SNOW   #e8f0ff #46506e #20263e #0c0e1e
+@bgpal night ROCK   #ffe8b8 #30344c #16182c #0a0a16
+@bgpal night LIGHT  #ffd070 #2e3650 #c86a2c #0a0c1a
+@bgpal night SKY    #fff4d8 #1c2244 #2e3862 #0a0c1a
+
+# ---- CGB OBJ palettes: @objpal PHASE SLOT (transparent) light mid dark ------------------------
+@objpal day   PLAYER  #000000 #eadcbe #6c7078 #1c2028
+@objpal dawn  PLAYER  #000000 #f4dcc4 #8a7c84 #2a2430
+@objpal dusk  PLAYER  #000000 #ffd8a0 #b0785c #1c1018
+@objpal night PLAYER  #000000 #f0e4c8 #8c94c0 #0a0c18
+
+@objpal day   EMBER   #000000 #fff4c0 #ec8a34 #5a2a1a
+@objpal dawn  EMBER   #000000 #fff4c0 #ec8a34 #5a2a1a
+@objpal dusk  EMBER   #000000 #fff0b0 #f08030 #4a1c14
+@objpal night EMBER   #000000 #fff0b0 #f08030 #6a3020
+
+@objpal day   UI      #000000 #f4eedc #9c968a #2a2a30
+@objpal dawn  UI      #000000 #fff0e0 #b0a098 #3a3240
+@objpal dusk  UI      #000000 #ffe8c8 #b08870 #24161e
+@objpal night UI      #000000 #e8ecf8 #7c86aa #2a3050
+
+@objpal day   WEATHER #000000 #ffffff #b0c0cc #6a7888
+@objpal dawn  WEATHER #000000 #ffffff #d0c4cc #8a7c8c
+@objpal dusk  WEATHER #000000 #ffe8d0 #b8a0a0 #5a4450
+@objpal night WEATHER #000000 #d8e4ff #6a7aa8 #343e66
+
+@objpal day   WATCHER #000000 #eef0f2 #a6acb6 #545a68
+@objpal dawn  WATCHER #000000 #fff4f2 #c0b4bc #6a5e6c
+@objpal dusk  WATCHER #000000 #f4e8f0 #a890a8 #4a3650
+@objpal night WATCHER #000000 #dce6f6 #8e9cc0 #3a4468
+
+@objpal day   BAND    #000000 #d8dcdc #767c88 #1e222c
+@objpal dawn  BAND    #000000 #f2e0d8 #8c7c88 #3a3040
+@objpal dusk  BAND    #000000 #ffd8b0 #6a3c52 #140c14
+@objpal night BAND    #000000 #c8d0e8 #3c4668 #04050c
+
+@objpal day   LIGHT   #000000 #fffce4 #ffd47a #c0703a
+@objpal dawn  LIGHT   #000000 #fffce4 #ffd47a #c0703a
+@objpal dusk  LIGHT   #000000 #fff8d8 #ffc868 #d06a30
+@objpal night LIGHT   #000000 #fff8d8 #ffc868 #d06a30
+
+@objpal day   GLOW    #000000 #fff0c0 #e0b070 #906038
+@objpal dawn  GLOW    #000000 #fff0c0 #e0b070 #906038
+@objpal dusk  GLOW    #000000 #fff0c0 #e0a860 #8a5030
+@objpal night GLOW    #000000 #ffe8a8 #c89048 #6a4424
