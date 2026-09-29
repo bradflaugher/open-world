@@ -12,6 +12,15 @@
 
 #include <stdint.h>
 
+/* Cold functions (world_init, bearing / distance helpers) live in world_gen.c, which is banked on
+ * the Game Boy; the hot path (world_mt and friends, world.c) is plain bank-0 code. */
+#ifdef __SDCC
+#include <gb/gb.h>
+#define WBANKED BANKED
+#else
+#define WBANKED
+#endif
+
 /* ---- metatiles: what a 16x16 cell looks like / is ---------------------------------------- */
 enum {
     MT_SEA = 0,        /* deep water, animated                       impassable */
@@ -85,7 +94,9 @@ typedef struct {
 
 extern world_layout_t world;       /* filled by world_init */
 
-void    world_init(uint16_t seed); /* compute the layout; clears nothing else (mods are separate) */
+/* Compute the layout; clears nothing else (mods are separate). Set world_old_cairns first.
+ * Slow (~0.5-1 s on the Game Boy): call once per world, never per frame. */
+void    world_init(uint16_t seed) WBANKED;
 uint8_t world_mt(uint16_t mx, uint16_t my);    /* final metatile incl. mods; the hot path */
 uint8_t world_mt_base(uint16_t mx, uint16_t my);/* generated metatile, ignoring mods */
 uint8_t world_biome(uint16_t mx, uint16_t my); /* biome of that cell (cheap-ish) */
@@ -110,8 +121,37 @@ extern coff_t  world_old_cairns[MAX_OLD_CAIRNS];
 extern uint8_t world_old_cairn_count;
 
 /* ---- helpers ---- */
-uint8_t world_bearing(uint16_t fx, uint16_t fy, uint16_t tx, uint16_t ty); /* 0..255 angle, 0 = north, 64 = east */
-uint16_t world_dist(uint16_t ax, uint16_t ay, uint16_t bx, uint16_t by);   /* approx (octagonal) distance, wraps */
+/* banked (cold) but cheap: a few hundred M-cycles each, fine to call a few times per frame */
+uint8_t world_bearing(uint16_t fx, uint16_t fy, uint16_t tx, uint16_t ty) WBANKED; /* 0..255 angle, 0 = north, 64 = east */
+uint16_t world_dist(uint16_t ax, uint16_t ay, uint16_t bx, uint16_t by) WBANKED;   /* approx (octagonal) distance, wraps */
+
+#ifdef WORLD_INTERNAL
+/* ---- shared between world.c (hot) and world_gen.c (cold); not part of the engine API ---- */
+#define W_NUM_ROADS (NUM_BEACONS + 1)
+#define W_ROAD_POOL 168                   /* breakpoint bytes shared by all roads */
+typedef struct {
+    uint16_t a_maj, a_min;                /* start point, (major, minor) axis */
+    uint16_t bx, by, bw, bh;              /* bounding box: x in [bx, bx+bw], y in [by, by+bh] */
+    uint8_t dmin;                         /* |minor delta| */
+    uint8_t flags;                        /* W_R_* */
+    uint8_t n;                            /* number of minor steps */
+    uint8_t shift;                        /* minor step = 1 << shift metatiles */
+    uint8_t x0;                           /* first breakpoint in w_road_x[] (n + 2 entries) */
+} w_road_t;
+#define W_R_YMAJOR 1                      /* major axis is y */
+#define W_R_MAJNEG 2                      /* major coordinate decreases along the road */
+#define W_R_MINNEG 4                      /* minor coordinate decreases along the road */
+extern w_road_t w_roads[W_NUM_ROADS];
+extern uint8_t  w_road_x[W_ROAD_POOL];    /* |major - a_maj| of each breakpoint */
+extern uint8_t  w_s0, w_s1;               /* seed bytes mixed into every hash */
+extern uint8_t  w_ready;                  /* set pieces valid */
+extern uint8_t  w_start_ground;
+extern uint16_t w_spx0, w_spy0;           /* coarse filter origin (64-metatile cells) */
+extern uint8_t  w_sp_bits[32];            /* 16 x 16 cells, bit set = set piece / road there */
+extern const uint8_t w_perm[256];
+void    w_reset(void);                    /* clear all caches (seed or layout changed) */
+#endif
+
 
 #ifndef __SDCC
 /* ---- host-only (tests / owgen): reachability over a window of metatiles (src/core/wreach.c) ---- */
