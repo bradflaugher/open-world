@@ -76,7 +76,7 @@ void watchers_update(void) BANKED
         if (!(night || ash) || pl_state == PL_SLEEP) return;
         watch_t = (uint8_t)(watch_t + 16);
         /* never near a fire: resting by one is safe */
-        if (watch_t == 0 && (wr8() & (ash ? 1 : 3)) == 0 && !warm_within(6)) try_spawn();
+        if (watch_t == 0 && (wr8() & (ash ? 1 : 3)) == 0 && !warm6) try_spawn();
         return;
     }
     rx = rel_x();
@@ -84,7 +84,7 @@ void watchers_update(void) BANKED
     /* gone at dawn, or when left far behind */
     if ((!night && !ash) || rx > 150 || rx < -150 || ry > 110 || ry < -110) { watchers_reset(); return; }
     /* the wanderer reached a fire's light: the figure withdraws */
-    if ((vbl_frames & 15) == 4) watch_warm = warm_within(6);
+    watch_warm = warm6;     /* refreshed by the main loop (bg_task) */
     if (watch_warm && !watch_fade) watch_fade = 40;
     if (watch_warm && watch_fade == 1) { watchers_reset(); return; }
     lit = glow_on;

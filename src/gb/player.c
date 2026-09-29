@@ -111,7 +111,7 @@ static void footstep(void)
 
 /* ---- targets ---- */
 static uint16_t ft_mx, ft_my;
-static uint8_t ft_sx, ft_sy, ft_face = 0xFF, ft_age, ft_near = 0xFF;
+static uint8_t ft_sx, ft_sy, ft_face = 0xFF, ft_age, ft_near = 0xFF, ft_new = 1;
 static void find_targets(void)
 {
     int8_t dx = dir_dx[pl_face], dy = dir_dy[pl_face];
@@ -119,6 +119,7 @@ static void find_targets(void)
     uint8_t i, m, cell_moved;
     cell_moved = (uint8_t)(ft_mx != pl_mx || ft_my != pl_my || land_changed || ++ft_age >= 32);
     if (!cell_moved && ft_sx == pl_sx && ft_sy == pl_sy && ft_face == pl_face) return;
+    ft_new = 1;
     ft_sx = pl_sx; ft_sy = pl_sy; ft_face = pl_face;
     /* probe 7 px beyond the hitbox edge in the facing direction */
     vx = (int8_t)(pl_sx + (dx > 0 ? HB_R + 8 : dx < 0 ? HB_L - 8 : 0));
@@ -342,7 +343,7 @@ static void glide_tick(void)
 void player_update(void) BANKED
 {
     int8_t dx = 0, dy = 0;
-    uint8_t spd, n, moved = 0, pure, m;
+    uint8_t spd, n, moved = 0, pure, m, slow;
 
     if (burn_t) {
         burn_t--;
@@ -373,7 +374,10 @@ void player_update(void) BANKED
         spd = (keys & J_B) ? (is_cgb ? 8 : DMG_RUN_QPX) : 4;
         if (dx && dy) spd = (uint8_t)(spd - (spd >> 2));
         m = mt_off(0, -2);
-        if (mt_flags[m] & MTF_SLOW) spd >>= 1;
+        /* heavy ground (shallows, drifts, dunes): 3/4 speed and shorter strides, so it reads
+           as wading rather than as the game slowing down */
+        slow = (uint8_t)(mt_flags[m] & MTF_SLOW);
+        if (slow) spd = (uint8_t)(spd - (spd >> 2));
         pure = (uint8_t)!(dx && dy);
         if (dx) {
             acc_x = (uint8_t)(acc_x + spd);
@@ -391,7 +395,8 @@ void player_update(void) BANKED
             walk_px = (uint8_t)(walk_px + moved);
             if (walk_px >= 8) { walk_px -= 8; pl_anim ^= 1; }
             step_px = (uint8_t)(step_px + moved);
-            if (step_px >= 16) { step_px -= 16; footstep(); }
+            n = (uint8_t)(slow ? 11 : 16);      /* stride */
+            if (step_px >= n) { step_px -= n; footstep(); }
         }
     } else {
         if (pl_state == PL_WALK) pl_state = PL_STAND;
@@ -403,7 +408,9 @@ void player_update(void) BANKED
     if (keys & (J_A | J_B | J_SELECT)) idle_t = 0;
     if ((pressed & (J_B | J_SELECT)) && pl_state == PL_SIT) { pl_state = PL_STAND; ambient_tempo(0); }
 
-    find_targets();
+    /* DMG: the target probe runs on odd frames only (a frame of latency on the hint / A is
+       invisible) so it never shares a frame's budget with the even-frame jobs */
+    if (is_cgb || (vbl_frames & 1) || (pressed & J_A)) find_targets();
     /* reaching the revealed Heart is enough */
     if (act_mt == MT_HEART && heart_revealed && pl_state != PL_GLIDE) ending_req = 1;
     if (pressed & J_A) {
@@ -422,7 +429,17 @@ void player_update(void) BANKED
 
     /* hint: bobbing pictogram above whatever A would act on */
     hint_on = 0;
-    if (pl_state != PL_SIT && can_act()) {
+    /* can_act (glide probes, cairn search) only when the target or the inputs to it changed */
+    {
+        static uint8_t ca_v, ca_key[3];
+        if (ft_new || ca_key[0] != equipped || ca_key[1] != stones || ca_key[2] != heart_revealed) {
+            ft_new = 0;
+            ca_key[0] = equipped; ca_key[1] = stones; ca_key[2] = heart_revealed;
+            ca_v = can_act();
+        }
+        m = ca_v;
+    }
+    if (pl_state != PL_SIT && m) {
         uint16_t hx = act_mt != 0xFF ? act_x : tgt_x, hy = act_mt != 0xFF ? act_y : tgt_y;
         int16_t sx = (int16_t)((int16_t)(hx - cam_mx) * 16 - cam_sx);
         int16_t sy = (int16_t)((int16_t)(hy - cam_my) * 16 - cam_sy);

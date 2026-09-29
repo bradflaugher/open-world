@@ -195,3 +195,29 @@ _cks_run::
     ld a,e
     ld (_cks_b),a
     ret
+
+; ---- stack paint: fill free WRAM between the end of the data (s__HEAP) and SP - 32 with
+; 0xA5 at boot, so the tests can find the stack's high-water mark ----
+    .globl s__HEAP
+    .globl _dbg_ram_end
+_stack_paint::
+    ld hl,#s__HEAP
+    ld a,l
+    ld (_dbg_ram_end),a
+    ld a,h
+    ld (_dbg_ram_end+1),a
+    ld hl,#-32
+    add hl,sp
+    ld b,h
+    ld c,l                  ; bc = the end of the paint (SP - 32)
+    ld hl,#s__HEAP
+1$:
+    ld a,#0xA5
+    ld (hl+),a
+    ld a,l
+    cp a,c
+    jr nz,1$
+    ld a,h
+    cp a,b
+    jr nz,1$
+    ret

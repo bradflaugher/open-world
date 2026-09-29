@@ -20,6 +20,7 @@ static uint8_t mark_rr;
 static uint8_t cairn_near = 0xFF;
 uint8_t band_mark_x[5];
 static uint8_t mark_last_a, mark_last_state = 0xFF;
+static uint8_t mark_tile[5], mark_pal[5];   /* tile 0 = hidden */
 
 static uint16_t brng;
 static uint8_t brnd(void)
@@ -133,22 +134,49 @@ void band_reset_angle(void) BANKED
     mark_rr = 0;
 }
 
-static void nearest_cairn(void)
+static volatile uint8_t mark_new;
+
+static void nearest_cairn(uint16_t mx, uint16_t my)
 {
-    uint8_t i;
+    uint8_t i, n = 0xFF;
     uint16_t best = 0xFFFF, d;
-    cairn_near = 0xFF;
     for (i = 0; i < cairn_n; i++) {
-        d = world_dist(pl_mx, pl_my, cairns[i].x, cairns[i].y);
-        if (d < best && d > 1) { best = d; cairn_near = i; }
+        d = world_dist(mx, my, cairns[i].x, cairns[i].y);
+        if (d < best && d > 1) { best = d; n = i; }
     }
+    cairn_near = n;             /* one byte store: the ISR never sees a half-done search */
+}
+
+/* Main loop: one marker bearing per call (world_bearing is a banked CORDIC, far too slow for
+ * the VBL game frame). The results are single bytes, picked up by band_update. */
+void band_bearing_task(void) BANKED
+{
+    uint16_t mx, my;
+    uint8_t b = 0, c;
+    __critical { mx = pl_mx; my = pl_my; }
+    switch (mark_rr) {
+    case 0: case 1: case 2:
+        b = world_bearing(mx, my, world.beacon[mark_rr].x, world.beacon[mark_rr].y);
+        break;
+    case 3:
+        b = world_bearing(mx, my, world.heart.x, world.heart.y);
+        break;
+    case 4:
+        nearest_cairn(mx, my);
+        c = cairn_near;
+        if (c == 0xFF) { mark_new = 1; mark_rr = 0; return; }
+        b = world_bearing(mx, my, cairns[c].x, cairns[c].y);
+        break;
+    }
+    if (b != mark_b[mark_rr]) { mark_b[mark_rr] = b; mark_new = 1; }
+    if (++mark_rr >= 5) mark_rr = 0;
 }
 
 void band_update(void) BANKED
 {
     uint16_t tgt = (uint16_t)face_bearing() << 8;
     int16_t d = (int16_t)(tgt - band_ang), s;
-    uint8_t i, a, x, tile, pal, show;
+    uint8_t i, a, x;
     /* ease towards the facing direction (shortest way round) */
     if (pl_state != PL_SLEEP && d) {
         s = (int16_t)(d >> 4);
@@ -160,48 +188,44 @@ void band_update(void) BANKED
     a = (uint8_t)(band_ang >> 8);
     nx_band_scx = (uint8_t)(a - 80);
 
-    /* one bearing refreshed every 8 frames (world_bearing is a banked CORDIC) */
-    if ((vbl_frames & 7) == 1 && !FRAME_LATE()) switch (mark_rr) {
-    case 0: case 1: case 2:
-        mark_b[mark_rr] = world_bearing(pl_mx, pl_my, world.beacon[mark_rr].x, world.beacon[mark_rr].y);
-        break;
-    case 3:
-        mark_b[3] = world_bearing(pl_mx, pl_my, world.heart.x, world.heart.y);
-        break;
-    case 4:
-        nearest_cairn();
-        if (cairn_near != 0xFF)
-            mark_b[4] = world_bearing(pl_mx, pl_my, cairns[cairn_near].x, cairns[cairn_near].y);
-        break;
-    }
-    if ((vbl_frames & 7) == 1 && ++mark_rr >= 5) mark_rr = 0;
-
     /* markers move only when the band turns or a bearing / state changes */
     i = (uint8_t)(beacons_lit | (heart_revealed << 3) | ((cairn_near != 0xFF) << 4));
-    if (a == mark_last_a && i == mark_last_state && (vbl_frames & 7) != 2) return;
+    if (a == mark_last_a && i == mark_last_state && !mark_new) return;
     if (FRAME_LATE()) return;
+    if (i != mark_last_state) {         /* tiles / palettes only when a state changes */
+        uint8_t k;
+        for (k = 0; k < 5; k++) {
+            uint8_t show = 1, tile, pal;
+            if (k < 3) {
+                if (beacons_lit & (1 << k)) { tile = SPR_BAND_BEACON_LIT; pal = OPAL_LIGHT | S_PALETTE; }
+                else { tile = SPR_BAND_BEACON; pal = OPAL_BAND; }
+            } else if (k == 3) {
+                tile = SPR_BAND_HEART; pal = OPAL_LIGHT | S_PALETTE;
+                show = heart_revealed;
+            } else {
+                tile = SPR_BAND_CAIRN; pal = OPAL_BAND;
+                show = (uint8_t)(cairn_near != 0xFF);
+            }
+            if (!is_cgb) pal &= S_PALETTE;
+            mark_tile[k] = show ? tile : 0;
+            mark_pal[k] = pal;
+        }
+    }
     mark_last_a = a;
     mark_last_state = i;
-    for (i = 0; i < 5; i++) {
-        show = 1;
-        if (i < 3) {
-            if (beacons_lit & (1 << i)) { tile = SPR_BAND_BEACON_LIT; pal = OPAL_LIGHT | S_PALETTE; }
-            else { tile = SPR_BAND_BEACON; pal = OPAL_BAND; }
-        } else if (i == 3) {
-            tile = SPR_BAND_HEART; pal = OPAL_LIGHT | S_PALETTE;
-            show = heart_revealed;
-        } else {
-            tile = SPR_BAND_CAIRN; pal = OPAL_BAND;
-            show = (uint8_t)(cairn_near != 0xFF);
+    mark_new = 0;
+    {
+        uint8_t *o = &oam[SP_MARK << 2];
+        for (i = 0; i < 5; i++, o += 4) {
+            x = (uint8_t)(mark_b[i] - a + 80);
+            if (!mark_tile[i] || x < 4 || x > 156) {
+                o[0] = 0;
+                band_mark_x[i] = 0xFF;
+                continue;
+            }
+            band_mark_x[i] = x;
+            o[0] = 16 + 8; o[1] = (uint8_t)(x + 8 - 4); o[2] = mark_tile[i]; o[3] = mark_pal[i];
         }
-        x = (uint8_t)(mark_b[i] - a + 80);
-        if (!show || x < 4 || x > 156) {
-            spr_hide((uint8_t)(SP_MARK + i));
-            band_mark_x[i] = 0xFF;
-            continue;
-        }
-        band_mark_x[i] = x;
-        if (!is_cgb) pal &= S_PALETTE;
-        spr_set((uint8_t)(SP_MARK + i), (uint8_t)(x + 8 - 4), (uint8_t)(16 + 8), tile, pal);
     }
+
 }

@@ -150,7 +150,10 @@ static const uint8_t pset_per[3][6] = {
 };
 static const uint8_t other_per[4] = { 47, 41, 59, 71 };  /* star, beacons */
 /* phases: dawn, day, dusk, night */
-static const uint8_t ph_step[4] = { 18, 16, 18, 24 };
+/* one pulse for every phase: night does not slow down (a slower tempo read as the game
+ * lagging), it thins out (ph_mask, ph_skip) and sinks (octave down, quieter) instead */
+static const uint8_t ph_step[4] = { 16, 16, 16, 16 };
+static const uint8_t ph_skip[4] = { 16, 0, 24, 72 };
 static const uint8_t ph_mask[4] = { 0x1F, 0x3F, 0x0F, 0x03 };
 static const uint8_t ph_vdown[4] = { 1, 0, 1, 2 };
 static const uint8_t ph_cell[4] = { CELL_RISE, CELL_MIX, CELL_FALL, CELL_ONE };
@@ -615,7 +618,8 @@ static void commit_b(void)
     g_pace = b_pace[b];
     g_duty = b_duty[b];
     g_det = b_det[b];
-    g_skip = b_skip[b];
+    v = (uint8_t)(b_skip[b] + ph_skip[c_phase]);
+    g_skip = v < b_skip[b] ? 255 : v;
     calc_step();
     /* drone */
     dn = b_drone[b][0];
@@ -1186,22 +1190,26 @@ void snd_core_tick(void)
         if (nw & 2) lp_cnt[L_BEACON + 1] = 12;
         if (nw & 4) lp_cnt[L_BEACON + 2] = 12;
     }
-    while (snd_rq_tail != snd_rq_head) {
-        sfx_start(snd_rq[snd_rq_tail]);
-        snd_rq_tail = (uint8_t)((snd_rq_tail + 1) & 3);
-    }
-
     /* ---- ambient ---- */
-    if (work)
-        do_work();
-    if (snd_xf)
-        xfade_frame();
+    r = 0;
     if (lay & LAY_LOOPS) {
         if (--step_t == 0) {
             step_t = step_len;
-            world_step();
+            r = 1;
         }
     }
+    /* one sfx start per frame, and not on a music step (a frame later is inaudible): a
+       burst of requests never lands on a single tick */
+    if (snd_rq_tail != snd_rq_head && !r) {
+        sfx_start(snd_rq[snd_rq_tail]);
+        snd_rq_tail = (uint8_t)((snd_rq_tail + 1) & 3);
+    }
+    if (work && !r)                         /* deferred work never shares a tick with a step */
+        do_work();
+    if (snd_xf)
+        xfade_frame();
+    if (r)
+        world_step();
     if (lay & LAY_MOTIF)
         motif_frame();
     if (eq_h != eq_t)

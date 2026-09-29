@@ -95,30 +95,18 @@ static void cgb_compute(uint8_t base, uint16_t *dst)
     for (k = 0; k < 32; k++) dst[k] = cgb_colour((uint8_t)(base + k));
 }
 
-/* During play (from the VBL ISR) the CGB palettes are recomputed incrementally, 8 colours a
- * frame, into a staging copy that is published whole: a full lerp is ~36k cycles. */
-static uint16_t pal_stage[64];
-static uint8_t pal_job = 0xFF, pal_again;
-uint8_t pal_pending;
-
-void pal_tick(void) BANKED
-{
-    uint8_t n;
-    if (pal_job == 0xFF) return;
-    for (n = 0; n < 8 && pal_job < 64; n++, pal_job++) pal_stage[pal_job] = cgb_colour(pal_job);
-    if (pal_job < 64 || pal_req) return;
-    memcpy(pal_bg_buf, pal_stage, 64);
-    memcpy(pal_obj_buf, &pal_stage[32], 64);
-    pal_req = 3;
-    pal_job = 0xFF;
-    if (pal_again) { pal_again = 0; pal_job = 0; }   /* inputs changed meanwhile: once more */
-}
+/* Palettes are never computed in the VBL game frame (a full CGB lerp is ~36k cycles, the DMG
+ * one a few thousand): from there pal_apply only raises pal_dirty, and the main loop's bg_task
+ * computes and publishes them, usually within the same frame. */
+volatile uint8_t pal_dirty;
 
 void pal_apply(void) BANKED
 {
-    uint8_t bgp = shade_lerp(dmg_bg_r[pal_phase_from], dmg_bg_r[pal_phase_to], pal_t);
-    uint8_t o0 = shade_lerp(dmg_o0_r[pal_phase_from], dmg_o0_r[pal_phase_to], pal_t);
-    uint8_t o1 = shade_lerp(dmg_o1_r[pal_phase_from], dmg_o1_r[pal_phase_to], pal_t);
+    uint8_t bgp, o0, o1;
+    if (hook_busy) { pal_dirty = 1; return; }
+    bgp = shade_lerp(dmg_bg_r[pal_phase_from], dmg_bg_r[pal_phase_to], pal_t);
+    o0 = shade_lerp(dmg_o0_r[pal_phase_from], dmg_o0_r[pal_phase_to], pal_t);
+    o1 = shade_lerp(dmg_o1_r[pal_phase_from], dmg_o1_r[pal_phase_to], pal_t);
     nx_land_bgp = shade_post(bgp, 0);
     nx_band_bgp = shade_post(bgp, 1);
     if (pal_flash) { o0 = 0; o1 = 0; }
@@ -126,13 +114,6 @@ void pal_apply(void) BANKED
     nx_obp0 = o0;
     nx_obp1 = o1;
     if (is_cgb) {
-        if (hook_busy && (LCDC_REG & LCDCF_ON)) {
-            if (pal_job == 0xFF) pal_job = 0;   /* start the incremental job */
-            else pal_again = 1;                 /* or run it once more when it ends */
-            return;
-        }
-        pal_job = 0xFF;
-        pal_again = 0;
         if (LCDC_REG & LCDCF_ON) while (pal_req) { __asm__("halt"); __asm__("nop"); }
         cgb_compute(0, pal_bg_buf);
         cgb_compute(32, pal_obj_buf);

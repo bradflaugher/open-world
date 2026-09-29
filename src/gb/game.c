@@ -35,7 +35,7 @@ uint16_t dbg_seed;
 uint8_t dbg_teleport;
 uint16_t dbg_tx, dbg_ty;
 uint8_t dbg_max_line;
-uint8_t near_warm, warm_dirty;
+uint8_t near_warm, warm_dirty, warm6;
 uint16_t dbg_world_frames;
 uint8_t dbg_ly[10];
 uint8_t dbg_refills;
@@ -199,6 +199,14 @@ static uint8_t chunk_of(uint16_t m, uint16_t s, uint8_t *out)
     return 1;
 }
 
+/* main-loop jobs read the wanderer / camera position through one atomic snapshot (the VBL
+ * game frame moves them; a 16-bit read could straddle it) */
+static uint16_t s_mx, s_my, s_cx, s_cy;
+static void snap(void)
+{
+    __critical { s_mx = pl_mx; s_my = pl_my; s_cx = cam_mx; s_cy = cam_my; }
+}
+
 static void visit_at(uint16_t mx, uint16_t my)
 {
     uint8_t cx, cy;
@@ -208,11 +216,12 @@ static void visit_at(uint16_t mx, uint16_t my)
 
 void visit_mark(void) BANKED
 {
-    visit_at(pl_mx, pl_my);
-    visit_at(cam_mx, cam_my);
-    visit_at((uint16_t)(cam_mx + 10), cam_my);
-    visit_at(cam_mx, (uint16_t)(cam_my + 8));
-    visit_at((uint16_t)(cam_mx + 10), (uint16_t)(cam_my + 8));
+    snap();
+    visit_at(s_mx, s_my);
+    visit_at(s_cx, s_cy);
+    visit_at((uint16_t)(s_cx + 10), s_cy);
+    visit_at(s_cx, (uint16_t)(s_cy + 8));
+    visit_at((uint16_t)(s_cx + 10), (uint16_t)(s_cy + 8));
 }
 
 uint8_t visit_get(uint8_t cx, uint8_t cy) BANKED
@@ -259,15 +268,18 @@ static const uint16_t phase_start[4] = { T_DAWN, T_DAY, T_DUSK, T_NIGHT };
 
 static void phase_update(uint8_t instant)
 {
-    uint8_t p = phase_of(tod), t;
-    uint16_t into = (uint16_t)(tod - phase_start[p]);
+    uint16_t now, into;
+    uint8_t p, t;
+    __critical { now = tod; }
+    p = phase_of(now);
+    into = (uint16_t)(now - phase_start[p]);
     if (p != phase) {
         uint8_t old = phase;
         phase = p;
         pal_phase_from = (instant || old > 3) ? p : old;
         pal_phase_to = p;
         pal_t = 0xFF;
-        if (p == PH_DAWN && !instant) sfx_play(SFX_DAWN);
+        if (p == PH_DAWN && !instant) { __critical { sfx_play(SFX_DAWN); } }
     }
     t = (uint8_t)(p == PH_NIGHT || p == PH_DUSK);
     if (t != stars_shown && band_stars(t)) stars_shown = t;
@@ -296,15 +308,18 @@ static uint8_t wx_hash(uint16_t a, uint16_t b)
 
 static void weather_update(void)
 {
-    uint16_t rx = (uint16_t)(pl_mx >> 6), ry = (uint16_t)(pl_my >> 6);
+    uint16_t rx, ry, dc;
     uint8_t h, w, b;
+    snap();
+    __critical { dc = day_count; }
+    rx = (uint16_t)(s_mx >> 6); ry = (uint16_t)(s_my >> 6);
     /* the biome is part of the key: its rules (snow in tundra, dry desert) change the result */
-    if (rx == wx_region_x && ry == wx_region_y && day_count == wx_day && biome_here == wx_biome) return;
+    if (rx == wx_region_x && ry == wx_region_y && dc == wx_day && biome_here == wx_biome) return;
     wx_region_x = rx;
     wx_region_y = ry;
-    wx_day = day_count;
+    wx_day = dc;
     wx_biome = biome_here;
-    h = wx_hash((uint16_t)(rx ^ world.seed), (uint16_t)(ry ^ (day_count << 6) ^ (day_count << 11)));
+    h = wx_hash((uint16_t)(rx ^ world.seed), (uint16_t)(ry ^ (dc << 6) ^ (dc << 11)));
     b = biome_here;
     if (h < 150) w = WX_CLEAR;
     else if (h < 195) w = WX_RAIN;
@@ -312,7 +327,7 @@ static void weather_update(void)
     else w = WX_STORM;
     if (b == B_TUNDRA && (w == WX_RAIN || w == WX_STORM)) w = WX_SNOW;
     if (b == B_DESERT && w != WX_CLEAR) w = (uint8_t)(h & 1 ? WX_CLEAR : WX_FOG);
-    if (day_count == 0 && (uint16_t)(pl_mx - world.start.x + 40) < 80 && (uint16_t)(pl_my - world.start.y + 40) < 80)
+    if (dc == 0 && (uint16_t)(s_mx - world.start.x + 40) < 80 && (uint16_t)(s_my - world.start.y + 40) < 80)
         w = WX_CLEAR;
     weather = w;          /* fx re-rolls the drops itself when the weather changes */
 }
@@ -323,7 +338,7 @@ static void ambient_update(void)
         amb_biome = biome_here;
         amb_phase = phase;
         amb_wx = weather;
-        ambient_set(biome_here, phase, weather);
+        __critical { ambient_set(biome_here, phase, weather); }
     }
 }
 
@@ -333,11 +348,12 @@ uint8_t warm_within(uint8_t r) BANKED
 {
     uint8_t i, n = world_mod_count, m, r2 = (uint8_t)(r << 1);
     const wmod_t *p = world_mods;
+    snap();
     for (i = 0; i < n; i++, p++) {
         m = p->mt;
         if (m != MT_FIRE_LIT && m != MT_BEACON_LIT) continue;
-        if ((uint16_t)(p->x - pl_mx + r) > r2) continue;
-        if ((uint16_t)(p->y - pl_my + r) > r2) continue;
+        if ((uint16_t)(p->x - s_mx + r) > r2) continue;
+        if ((uint16_t)(p->y - s_my + r) > r2) continue;
         return 1;
     }
     return 0;
@@ -346,15 +362,16 @@ uint8_t warm_within(uint8_t r) BANKED
 static uint16_t warm_mx = 0xFFFF, warm_my;
 static void scan_warm(void)
 {
-    near_warm = warm_within(3);
-    warm_mx = pl_mx;
-    warm_my = pl_my;
+    near_warm = warm_within(3);     /* takes the snapshot */
+    warm_mx = s_mx;
+    warm_my = s_my;
 }
 
 /* rescan only when the wanderer changes cell or the land changed (a fire was lit) */
 static void scan_warm_maybe(void)
 {
-    if (pl_mx != warm_mx || pl_my != warm_my || warm_dirty) { warm_dirty = 0; scan_warm(); }
+    snap();
+    if (s_mx != warm_mx || s_my != warm_my || warm_dirty) { warm_dirty = 0; scan_warm(); }
 }
 
 
@@ -396,22 +413,39 @@ static void time_tick(void)
     if (pl_state == PL_SLEEP) tf = 0;
     tod = (uint16_t)(tod + tf);
     if (tod >= DAY_FRAMES) { tod -= DAY_FRAMES; day_count++; }
-    /* one heavy job per frame, on its own slot of the frame counter (the band refreshes a
-       bearing on slot 1) */
-    tick8 = vbl_frames;
-    if (!FRAME_LATE()) switch (tick8 & 7) {
-    case 0: TM_B(); phase_update(0); TM_E(0); break;
-    case 2: case 6: TM_B(); scan_warm_maybe(); TM_E(1); break;
-    case 3: if (tick8 & 8) { TM_B(); visit_mark(); TM_E(2); } break;
-    case 5:
-        switch ((tick8 >> 3) & 3) {
-        case 0: TM_B(); biome_update(); TM_E(3); break;
-        case 1: TM_B(); weather_update(); TM_E(4); break;
-        case 2: TM_B(); ambient_update(); TM_E(5); break;
+    /* the occasional jobs (phase and palettes, warmth scan, map, weather, biome, music,
+       band bearings) run in the main loop: bg_task() */
+    warmth_tick(tf);
+}
+
+/* Main loop, one job per new frame (between streaming calls), so the VBlank game frame only
+ * does what must happen every frame. Reads the ISR-owned state (a snapshot where it matters). */
+static uint8_t bg_frame;
+void band_bearing_task(void) BANKED;
+
+static void bg_task(void)
+{
+    uint8_t f = vbl_frames;
+    if (f == bg_frame) {
+        if (pal_dirty) { pal_dirty = 0; pal_apply(); }   /* palettes asap */
+        return;
+    }
+    bg_frame = f;
+    switch (f & 7) {
+    case 0: phase_update(0); break;
+    case 1: case 5: band_bearing_task(); break;
+    case 2: case 6: scan_warm_maybe(); break;
+    case 3: if (f & 8) visit_mark(); break;
+    case 4: warm6 = warm_within(6); break;
+    case 7:
+        switch ((f >> 3) & 3) {
+        case 0: biome_update(); break;
+        case 1: weather_update(); break;
+        case 2: ambient_update(); break;
         }
         break;
     }
-    TM_B(); warmth_tick(tf); TM_E(6);
+    if (pal_dirty) { pal_dirty = 0; pal_apply(); }
 }
 
 /* ---------------------------------------------------------------- transitions */
@@ -606,24 +640,33 @@ void world_frame(void) BANKED
     rx = (int16_t)(((int16_t)(cam_mx - land_x0) << 4) + cam_sx);
     ry = (int16_t)(((int16_t)(cam_my - land_y0) << 4) + cam_sy);
     if (rx < 0 || rx > 88 || ry < 0 || ry > 128) { request(REQ_REFILL); return; }
+    PSTAGE(PF_INPUT);
     if (rx < 10 || rx > 62 || ry < 10 || ry > 102) dbg_stalls++;
     else player_update();
+    PSTAGE(PF_PLAYER);
     dbg_stage = 2;
     if (ending_req) { request(REQ_ENDING); return; }
     camera_update();
     time_tick();
+    PSTAGE(PF_TIME);
     dbg_stage = 3;
     if (watch_on || (vbl_frames & 15) == 4) watchers_update();   /* idle: roll every 16 frames (slot 4) */
+    PSTAGE(PF_WATCH);
     band_update();
+    PSTAGE(PF_BAND);
     dbg_stage = 4;
     player_draw();
+    PSTAGE(PF_DRAW);
     dbg_stage = 5;
     fx_update();
+    PSTAGE(PF_FX);
     dbg_stage = 6;
     frame_commit();
     dbg_stage = 7;
     if (!warmth) request(REQ_WHITEOUT);
-    { uint8_t l = LY_REG; l = (uint8_t)(l >= 144 ? l - 144 : l + 10); if (l > dbg_hook_ly) dbg_hook_ly = l; }
+    PSTAGE(PF_COMMIT);
+    if (prof_t > dbg_pmax[PF_END]) { dbg_pmax[PF_END] = prof_t; dbg_pcur[PF_END] = prof_t; memcpy(dbg_pworst, dbg_pcur, 16); }
+    if (prof_t > dbg_hook_ly) dbg_hook_ly = prof_t;
 }
 
 static void world_run(void)
@@ -634,6 +677,7 @@ static void world_run(void)
         world_req = REQ_NONE;
         hook_on = 1;
         while (!world_req) {
+            bg_task();
             if (eq_apply()) continue;
             if (save_req) { save_req = 0; save_write(); continue; }
             __critical { cx = cam_mx; cy = cam_my; }

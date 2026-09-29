@@ -264,14 +264,18 @@ uint8_t land_rel(int8_t dx, int8_t dy)
     return CELL((uint8_t)pl_mx + dx, (uint8_t)pl_my + dy);
 }
 
+/* cell offset of a pixel offset v in [-16, 31] relative to the foot's cell (-1, 0, 1):
+   compares instead of SDCC's signed-shift loops (this is the per-pixel collision path) */
+#define CO(v) ((int8_t)(v) < 0 ? (int8_t)-1 : (int8_t)(v) >= 16 ? (int8_t)1 : (int8_t)0)
+
 /* is the hitbox [x-5, x+4] x [y-5, y] free, with the foot moved by (ox, oy) pixels? */
 uint8_t land_box_free(int8_t ox, int8_t oy)
 {
     int8_t vx = (int8_t)(pl_sx + ox), vy = (int8_t)(pl_sy + oy);
-    uint8_t x0 = (uint8_t)((uint8_t)pl_mx + (int8_t)((int8_t)(vx - 5) >> 4));
-    uint8_t x1 = (uint8_t)((uint8_t)pl_mx + (int8_t)((int8_t)(vx + 4) >> 4));
-    uint8_t y0 = (uint8_t)((uint8_t)pl_my + (int8_t)((int8_t)(vy - 5) >> 4));
-    uint8_t y1 = (uint8_t)((uint8_t)pl_my + (int8_t)(vy >> 4));
+    uint8_t x0 = (uint8_t)((uint8_t)pl_mx + CO(vx - 5));
+    uint8_t x1 = (uint8_t)((uint8_t)pl_mx + CO(vx + 4));
+    uint8_t y0 = (uint8_t)((uint8_t)pl_my + CO(vy - 5));
+    uint8_t y1 = (uint8_t)((uint8_t)pl_my + CO(vy));
     if (mt_flags[CELL(x0, y0)] & MTF_SOLID) return 0;
     if (x1 != x0 && (mt_flags[CELL(x1, y0)] & MTF_SOLID)) return 0;
     if (y1 != y0) {
@@ -310,9 +314,9 @@ uint8_t land_near_act(void)
 int8_t land_slide_x(int8_t sx)
 {
     int8_t vx = (int8_t)(pl_sx + sx), vy = (int8_t)pl_sy;
-    uint8_t xe = (uint8_t)((uint8_t)pl_mx + (int8_t)((int8_t)(sx > 0 ? vx + 4 : vx - 5) >> 4));
-    uint8_t y0 = (uint8_t)((uint8_t)pl_my + (int8_t)((int8_t)(vy - 5) >> 4));
-    uint8_t y1 = (uint8_t)((uint8_t)pl_my + (int8_t)(vy >> 4));
+    uint8_t xe = (uint8_t)((uint8_t)pl_mx + CO(sx > 0 ? vx + 4 : vx - 5));
+    uint8_t y0 = (uint8_t)((uint8_t)pl_my + CO(vy - 5));
+    uint8_t y1 = (uint8_t)((uint8_t)pl_my + CO(vy));
     uint8_t b0, b1;
     if (y0 == y1) return 0;
     b0 = (uint8_t)(mt_flags[CELL(xe, y0)] & MTF_SOLID);
@@ -325,9 +329,9 @@ int8_t land_slide_x(int8_t sx)
 int8_t land_slide_y(int8_t sy)
 {
     int8_t vx = (int8_t)pl_sx, vy = (int8_t)(pl_sy + sy);
-    uint8_t ye = (uint8_t)((uint8_t)pl_my + (int8_t)((int8_t)(sy > 0 ? vy : vy - 5) >> 4));
-    uint8_t x0 = (uint8_t)((uint8_t)pl_mx + (int8_t)((int8_t)(vx - 5) >> 4));
-    uint8_t x1 = (uint8_t)((uint8_t)pl_mx + (int8_t)((int8_t)(vx + 4) >> 4));
+    uint8_t ye = (uint8_t)((uint8_t)pl_my + CO(sy > 0 ? vy : vy - 5));
+    uint8_t x0 = (uint8_t)((uint8_t)pl_mx + CO(vx - 5));
+    uint8_t x1 = (uint8_t)((uint8_t)pl_mx + CO(vx + 4));
     uint8_t b0, b1;
     if (x0 == x1) return 0;
     b0 = (uint8_t)(mt_flags[CELL(x0, ye)] & MTF_SOLID);
