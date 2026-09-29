@@ -221,7 +221,7 @@ static void act(void)
     if (act_mt != 0xFF) {
         switch (act_mt) {
         case MT_FIRE_COLD:
-            edit_mt(act_x, act_y, MT_FIRE_LIT);
+            if (!edit_mt_r(act_x, act_y, MT_FIRE_LIT, EDIT_RESERVE)) return;
             respawn_x = act_x;
             respawn_y = act_y;
             sfx_play(SFX_LIGHT);
@@ -236,10 +236,10 @@ static void act(void)
             for (i = 0; i < 2; i++) {
                 if (world.shrine[i].x == act_x && world.shrine[i].y == act_y) {
                     uint8_t it = (uint8_t)(i == 0 ? IT_STONES : IT_CLOAK);
+                    if (!edit_mt(act_x, act_y, MT_SHRINE_EMPTY)) return;
                     items |= (uint8_t)(1 << it);
                     equipped = it;
                     if (it == IT_STONES) stones = STONES_MAX;
-                    edit_mt(act_x, act_y, MT_SHRINE_EMPTY);
                     sfx_play(SFX_ITEM);
                     item_pulse = 120;
                     save_req = 1;
@@ -257,7 +257,7 @@ static void act(void)
     }
     switch (equipped) {
     case IT_LANTERN:
-        if (m == MT_BRAMBLE && !burn_t) {
+        if (m == MT_BRAMBLE && !burn_t && edit_room(0)) {
             burn_x = tgt_x;
             burn_y = tgt_y;
             burn_t = 40;
@@ -279,15 +279,15 @@ static void act(void)
         }
         if (!stones) break;
         if (m == MT_SHALLOW) {
-            edit_mt(tgt_x, tgt_y, MT_STEPSTONE);
+            if (!edit_mt(tgt_x, tgt_y, MT_STEPSTONE)) return;
             stones--;
             sfx_play(SFX_STEPSTONE);
             save_req = 1;
             return;
         }
         if (!blocked_mt(m) && m != MT_STEPSTONE && m != MT_ROAD && !under_me(tgt_x, tgt_y) &&
-            edit_room() && cairn_n < MAX_CAIRNS) {
-            edit_mt(tgt_x, tgt_y, MT_CAIRN);
+            edit_room(EDIT_RESERVE) && cairn_n < MAX_CAIRNS) {
+            if (!edit_mt_r(tgt_x, tgt_y, MT_CAIRN, EDIT_RESERVE)) return;
             cairns[cairn_n].x = tgt_x;
             cairns[cairn_n].y = tgt_y;
             cairn_n++;
@@ -346,7 +346,8 @@ void player_update(void) BANKED
 
     if (burn_t) {
         burn_t--;
-        if (burn_t == 0) edit_mt(burn_x, burn_y, MT_ASH);
+        if (burn_t == 0 && !edit_mt(burn_x, burn_y, MT_ASH))
+            land_set(burn_x, burn_y, MT_BRAMBLE);    /* refused: the thorns are still there */
     }
     if (pl_state == PL_GLIDE) {
         glide_tick();

@@ -58,6 +58,7 @@ static uint8_t prev_keys;
 static uint16_t warm_acc;
 static uint8_t amb_biome = 0xFF, amb_phase = 0xFF, amb_wx = 0xFF;
 static uint16_t wx_region_x = 0xFFFF, wx_region_y = 0xFFFF, wx_day = 0xFFFF;
+static uint8_t wx_biome = 0xFF;
 static uint8_t wake_t;
 static uint8_t tick8;
 static uint16_t shake_rng = 0xBEEF;
@@ -113,16 +114,27 @@ static uint8_t eq_push(uint16_t mx, uint16_t my, uint8_t mt)
     return 1;
 }
 
-uint8_t edit_room(void) BANKED
+/* room for another mod, keeping `reserve` slots free (progression edits pass 0; cairns and
+   fires keep EDIT_RESERVE free, so beacons, shrines, stepping stones and brambles always fit) */
+uint8_t edit_room(uint8_t reserve) BANKED
 {
-    return (uint8_t)(world_mod_count + ((eq_head - eq_tail) & (EQ_N - 1)) + 1 < MAX_MODS);
+    uint8_t used = (uint8_t)(world_mod_count + ((eq_head - eq_tail) & (EQ_N - 1)));
+    return (uint8_t)(used < MAX_MODS && (uint8_t)(MAX_MODS - used) > reserve);
 }
 
-void edit_mt(uint16_t mx, uint16_t my, uint8_t mt) BANKED
+/* 1 if the edit was accepted (shown now, applied to the mods by the main loop); 0 (with the
+   "no" sound) if the table is full or the queue is busy: the caller must not advance */
+uint8_t edit_mt_r(uint16_t mx, uint16_t my, uint8_t mt, uint8_t reserve) BANKED
 {
-    if (!edit_room() || !eq_push(mx, my, mt)) { sfx_play(SFX_NO); return; }
+    if (!edit_room(reserve) || !eq_push(mx, my, mt)) { sfx_play(SFX_NO); shake = 3; return 0; }
     land_set(mx, my, mt);
     warm_dirty = 1;
+    return 1;
+}
+
+uint8_t edit_mt(uint16_t mx, uint16_t my, uint8_t mt) BANKED
+{
+    return edit_mt_r(mx, my, mt, 0);
 }
 
 void edit_remove(uint16_t mx, uint16_t my) BANKED
@@ -163,7 +175,7 @@ static void main_flush(void)
 
 void light_beacon(uint8_t i) BANKED
 {
-    edit_mt(world.beacon[i].x, world.beacon[i].y, MT_BEACON_LIT);
+    if (!edit_mt(world.beacon[i].x, world.beacon[i].y, MT_BEACON_LIT)) return;
     beacons_lit |= (uint8_t)(1 << i);
     respawn_x = world.beacon[i].x;
     respawn_y = world.beacon[i].y;
@@ -286,10 +298,12 @@ static void weather_update(void)
 {
     uint16_t rx = (uint16_t)(pl_mx >> 6), ry = (uint16_t)(pl_my >> 6);
     uint8_t h, w, b;
-    if (rx == wx_region_x && ry == wx_region_y && day_count == wx_day) return;
+    /* the biome is part of the key: its rules (snow in tundra, dry desert) change the result */
+    if (rx == wx_region_x && ry == wx_region_y && day_count == wx_day && biome_here == wx_biome) return;
     wx_region_x = rx;
     wx_region_y = ry;
     wx_day = day_count;
+    wx_biome = biome_here;
     h = wx_hash((uint16_t)(rx ^ world.seed), (uint16_t)(ry ^ (day_count << 6) ^ (day_count << 11)));
     b = biome_here;
     if (h < 150) w = WX_CLEAR;

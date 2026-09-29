@@ -25,7 +25,7 @@ GB_OBJS := $(patsubst src/core/%.c,$(OBJ)/core_%.o,$(CORE_SRC)) \
            $(OBJ)/assets.o \
            $(patsubst src/gb/%.s,$(OBJ)/%_s.o,$(GB_ASM))
 
-.PHONY: all rom assets test test-host test-assets test-rom screenshots clean
+.PHONY: all rom assets test test-host test-assets test-rom test-ubsan screenshots clean
 
 all: rom
 
@@ -73,6 +73,12 @@ $(BUILD)/owgen: tools/owgen.c $(CORE_SRC) $(wildcard src/core/*.h) | $(BUILD)
 test-host: $(BUILD)/test_core $(BUILD)/test_sound $(BUILD)/owgen
 	$(BUILD)/test_core
 	$(BUILD)/test_sound
+
+# the world core under UBSan (host): catches undefined behaviour the GB build would hide
+test-ubsan: | $(BUILD)
+	$(CC) -std=c99 -O1 -g -fsanitize=undefined -fno-sanitize-recover=undefined -Isrc/core \
+		-o $(BUILD)/test_core_ubsan tests/test_core.c $(CORE_SRC)
+	$(BUILD)/test_core_ubsan
 
 test-assets:
 	$(PYTHON) -m unittest discover -s tests -p 'test_assets.py'

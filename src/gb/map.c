@@ -79,8 +79,16 @@ static void render_tile(uint8_t tx, uint8_t ty)
 static uint8_t place(uint8_t slot, uint8_t sx, uint8_t sy, uint8_t tile, uint8_t pal)
 {
     uint8_t y = (uint8_t)(sy - 3), i;
-    for (i = 0; i < 8; i++) if (line_n[(uint8_t)(y + i)] >= 9) return 0;
-    for (i = 0; i < 16; i++) line_n[(uint8_t)(y + i) < 144 ? (uint8_t)(y + i) : 143]++;
+    /* an 8x16 sprite covers 16 lines: all of them must have room (lines past the screen are
+       not drawn, so they do not count) */
+    for (i = 0; i < 16; i++) {
+        uint8_t l = (uint8_t)(y + i);
+        if (l < 144 && line_n[l] >= 9) return 0;
+    }
+    for (i = 0; i < 16; i++) {
+        uint8_t l = (uint8_t)(y + i);
+        if (l < 144) line_n[l]++;
+    }
     spr_set(slot, (uint8_t)(sx - 3 + 8), (uint8_t)(y + 16), tile, pal);
     return 1;
 }

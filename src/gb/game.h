@@ -62,9 +62,12 @@ extern uint8_t dbg_saves;
 void game_main(void) BANKED;
 void world_enter(uint8_t fresh) BANKED;           /* load the world view around the player */
 void camera_update(void) BANKED;
-void edit_mt(uint16_t mx, uint16_t my, uint8_t mt) BANKED;  /* show now, mod applied by the main loop */
+/* world edits: shown now, the mod applied by the main loop. Return 1 if accepted. */
+#define EDIT_RESERVE 16                                     /* mod slots kept for progression */
+uint8_t edit_mt(uint16_t mx, uint16_t my, uint8_t mt) BANKED;           /* progression */
+uint8_t edit_mt_r(uint16_t mx, uint16_t my, uint8_t mt, uint8_t reserve) BANKED;
 void edit_remove(uint16_t mx, uint16_t my) BANKED;          /* drop a mod (cairn picked up) */
-uint8_t edit_room(void) BANKED;                             /* room for another mod? */
+uint8_t edit_room(uint8_t reserve) BANKED;                  /* room for another mod? */
 void world_frame(void) BANKED;                              /* one frame of play (from the VBL ISR) */
 extern volatile uint8_t save_req;                           /* main loop saves when set */
 

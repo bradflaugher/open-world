@@ -29,7 +29,8 @@ uint8_t world_bearing(uint16_t fx, uint16_t fy, uint16_t tx, uint16_t ty) WBANKE
     uint8_t ang = 0, i;
     if (!u && !v) return 0;
     while (u > 4095 || u < -4095 || v > 4095 || v < -4095) { u >>= 1; v >>= 1; }
-    while (u < 2048 && u > -2048 && v < 2048 && v > -2048) { u = (int16_t)(u << 1); v = (int16_t)(v << 1); }
+    /* scale up by doubling (a left shift of a negative value is undefined in C99) */
+    while (u < 2048 && u > -2048 && v < 2048 && v > -2048) { u = (int16_t)(u * 2); v = (int16_t)(v * 2); }
     if (u < 0) { u = (int16_t)-u; v = (int16_t)-v; ang = 128; }
     for (i = 0; i < 8; i++) {
         if (v > 0) {

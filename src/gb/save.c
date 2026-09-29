@@ -1,6 +1,7 @@
 /* save.c - OPEN WORLD battery save (MBC5 SRAM, bank 0 of RAM): two checksummed copies, the
  * primary at 0xA000 and the backup at 0xB000. A write torn by a power cut can only damage
- * one copy; loading falls back to the other and repairs the primary. Never called from ISRs. */
+ * one copy; loading falls back to the other and repairs whichever copy is bad. Never called
+ * from ISRs. */
 #pragma bank 255
 #include <gb/gb.h>
 #include <string.h>
@@ -27,6 +28,7 @@ typedef struct {
 
 #define SAVE_LEN (sizeof(save_hdr_t) + sizeof(cairns) + sizeof(world_old_cairns) + sizeof(world_mods) + sizeof(visited))
 typedef char save_fits[(SAVE_LEN + 2 <= 0x1000) ? 1 : -1];
+uint16_t dbg_save_len = SAVE_LEN;   /* tests: bytes per copy before the checksum */
 
 uint8_t dbg_saves;
 static save_hdr_t hdr;
@@ -53,43 +55,64 @@ static uint8_t *put(uint8_t *d, const void *s, uint16_t n)
     return d + n;
 }
 
-static void write_copy(uint8_t *d, uint16_t c)
+/* One copy: the header and cairns come from the atomic snapshot; the mods (main-loop owned)
+ * and the visited bitmap (the VBL game frame may set a bit meanwhile) straight from RAM. The
+ * checksum is then taken over the copy as written in SRAM, so each copy is self-consistent
+ * whatever the game frame did during the write. */
+static void write_copy(uint8_t *base, const uint8_t *cairn_snap)
 {
+    uint8_t *d = base;
+    uint16_t c;
     d = put(d, &hdr, sizeof hdr);
-    d = put(d, cairns, sizeof cairns);
+    d = put(d, cairn_snap, sizeof cairns);
     d = put(d, world_old_cairns, sizeof world_old_cairns);
     d = put(d, world_mods, sizeof world_mods);
     d = put(d, visited, sizeof visited);
+    c = cks(base, (uint16_t)SAVE_LEN);
     d[0] = (uint8_t)c;
     d[1] = (uint8_t)(c >> 8);
 }
 
+/* wait for a stretch of scanlines with no interrupt due (after the band split at line 23,
+   well before the VBlank), for a short interrupts-off snapshot */
+static void quiet_window(void)
+{
+    uint8_t ly;
+    if (!(LCDC_REG & LCDCF_ON)) return;
+    for (;;) {
+        ly = LY_REG;
+        if (ly >= 28 && ly < 100) return;
+    }
+}
+
+/* Main loop only. The game frame (VBL ISR) keeps running: it owns the position, items and
+ * cairns (snapshotted here with interrupts off, ~10 scanlines) and may set visited bits while
+ * the copies are written; each copy's checksum is taken from SRAM after writing it. */
 void save_write(void) BANKED
 {
-    hdr.magic[0] = 'O';
-    hdr.magic[1] = 'W';
-    hdr.version = SAVE_VERSION;
-    hdr.seed = world.seed;
-    hdr.mx = pl_mx; hdr.my = pl_my;
-    hdr.sx = pl_sx; hdr.sy = pl_sy; hdr.face = pl_face;
-    hdr.tod = tod; hdr.day = day_count;
-    hdr.items = items; hdr.equipped = equipped; hdr.beacons = beacons_lit; hdr.stones = stones;
-    hdr.warmth = warmth;
-    hdr.rx = respawn_x; hdr.ry = respawn_y;
-    hdr.worlds = worlds_done;
-    hdr.cairn_n = cairn_n;
-    hdr.old_n = world_old_cairn_count;
-    hdr.mod_n = world_mod_count;
-    cks_begin();
-    cks_add(&hdr, sizeof hdr);
-    cks_add(cairns, sizeof cairns);
-    cks_add(world_old_cairns, sizeof world_old_cairns);
-    cks_add(world_mods, sizeof world_mods);
-    cks_add(visited, sizeof visited);
+    uint8_t *cairn_snap = scratch;       /* 128 of the shared main-loop buffer */
+    quiet_window();
+    __critical {
+        memcpy(cairn_snap, cairns, sizeof cairns);
+        hdr.magic[0] = 'O';
+        hdr.magic[1] = 'W';
+        hdr.version = SAVE_VERSION;
+        hdr.seed = world.seed;
+        hdr.mx = pl_mx; hdr.my = pl_my;
+        hdr.sx = pl_sx; hdr.sy = pl_sy; hdr.face = pl_face;
+        hdr.tod = tod; hdr.day = day_count;
+        hdr.items = items; hdr.equipped = equipped; hdr.beacons = beacons_lit; hdr.stones = stones;
+        hdr.warmth = warmth;
+        hdr.rx = respawn_x; hdr.ry = respawn_y;
+        hdr.worlds = worlds_done;
+        hdr.cairn_n = cairn_n;
+        hdr.old_n = world_old_cairn_count;
+        hdr.mod_n = world_mod_count;
+    }
     ENABLE_RAM;
     SWITCH_RAM(0);
-    write_copy(SRAM_PRIMARY, (uint16_t)(((uint16_t)cks_b << 8) | cks_a));
-    write_copy(SRAM_BACKUP, (uint16_t)(((uint16_t)cks_b << 8) | cks_a));
+    write_copy(SRAM_PRIMARY, cairn_snap);
+    write_copy(SRAM_BACKUP, cairn_snap);
     DISABLE_RAM;
     dbg_saves++;
 }
@@ -132,7 +155,9 @@ uint8_t save_load(void) BANKED
     memcpy(world_old_cairns, s, sizeof world_old_cairns); s += sizeof world_old_cairns;
     memcpy(world_mods, s, sizeof world_mods); s += sizeof world_mods;
     memcpy(visited, s, sizeof visited);
-    if (!copy_valid(SRAM_PRIMARY)) memcpy(SRAM_PRIMARY, SRAM_BACKUP, SAVE_LEN + 2);   /* repair */
+    /* repair whichever copy is damaged (a write torn by a power cut) from the good one */
+    if (!copy_valid(SRAM_PRIMARY)) memcpy(SRAM_PRIMARY, SRAM_BACKUP, SAVE_LEN + 2);
+    else if (!copy_valid(SRAM_BACKUP)) memcpy(SRAM_BACKUP, SRAM_PRIMARY, SAVE_LEN + 2);
     DISABLE_RAM;
     pl_mx = hdr.mx; pl_my = hdr.my;
     pl_sx = hdr.sx; pl_sy = hdr.sy; pl_face = hdr.face;

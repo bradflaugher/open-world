@@ -277,6 +277,15 @@ class Game:
 DIRV = {'up': (0, -1), 'down': (0, 1), 'left': (-1, 0), 'right': (1, 0)}
 
 
+def save_copy_valid(sram, base, n):
+    """the ROM's save checksum (a += byte, b += a) over one copy"""
+    a, b = 0x5A, 0xA5
+    for x in sram[base:base + n]:
+        a = (a + x) & 0xFF
+        b = (b + a) & 0xFF
+    return sram[base:base + 2] == b'OW' and sram[base + n] == a and sram[base + n + 1] == b
+
+
 class Base(unittest.TestCase):
     CGB = False
     SEED = 0x1234
@@ -680,6 +689,84 @@ class RomTest(Base):
         d1 = (g.u16('watch_mx') - mx) * 16 + g.u8('watch_sx') - sx
         self.assertLess(d1, 32, 'the Watcher did not drift towards the light')
         self.assertTrue(g.wait(lambda: g.state() == GS_WHITEOUT, 900), 'its touch did not white out')
+
+    def test_save_while_walking_stays_valid(self):
+        """saves taken while the game frame keeps changing the visited map and the position"""
+        g = self.g
+        g.new_world(self.SEED)
+        n = g.u16('dbg_save_len')
+        saves = g.u8('dbg_saves')
+        for keys in (['right', 'b'], ['down', 'b'], ['left', 'b'], ['up', 'b']):
+            g.pb.button_press(keys[0]); g.pb.button_press('b')
+            for _ in range(6):
+                g.set_u8('save_req', 1)
+                g.run(20)
+            g.pb.button_release(keys[0]); g.pb.button_release('b')
+        g.run(30)
+        self.assertGreater(g.u8('dbg_saves'), saves + 10)
+        sram = g.sram()
+        for base in (0, 0x1000):
+            self.assertTrue(save_copy_valid(sram, base, n), f'save copy at +{base:#x} is invalid')
+        g.stop()
+        self.g = g = Game(self.CGB, sram)
+        g.boot_to_title()
+        g.press('a')
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD, 3000))
+        self.assertEqual(g.world()['seed'], self.SEED)
+
+    def test_torn_backup_is_repaired(self):
+        g = self.g
+        g.new_world(self.SEED)
+        g.face('up')
+        g.press('a', after=10)
+        n = g.u16('dbg_save_len')
+        sram = bytearray(g.sram())
+        g.stop()
+        sram[0x1000 + 40] ^= 0xA5                    # the backup copy is damaged
+        self.g = g = Game(self.CGB, bytes(sram))
+        g.boot_to_title()                           # the title reads the save
+        fixed = g.sram()
+        self.assertTrue(save_copy_valid(fixed, 0x1000, n), 'backup not repaired')
+        self.assertEqual(fixed[0x1000:0x1000 + n + 2], fixed[0:n + 2])
+
+    def fill_mods(self, count):
+        """pad the mods table with harmless far-away entries up to `count`"""
+        g = self.g
+        a = g.addr('world_mods')
+        k = g.u8('world_mod_count')
+        for i in range(k, count):
+            b = a + i * 5
+            x, y = 1000 + i * 3, 1000
+            for j, v in enumerate((x & 0xFF, x >> 8, y & 0xFF, y >> 8, MT['MT_ASH'])):
+                g.pb.memory[b + j] = v
+        g.set_u8('world_mod_count', count)
+        g.run(4)
+
+    def test_full_mod_table_refuses_without_advancing(self):
+        g = self.g
+        g.new_world(self.SEED)
+        w = g.world()
+        max_mods = 96
+        # cairns may not use the last 16 slots
+        self.fill_mods(max_mods - 16)
+        g.set_u8('items', 3)
+        g.set_u8('equipped', IT_STONES)
+        g.teleport(*self.open_ground(w['start']))
+        g.face('right')
+        g.set_u8('stones', 5)
+        g.press('a', after=6)
+        self.assertEqual(g.u8('cairn_n'), 0)
+        self.assertEqual(g.u8('stones'), 5)
+        # ... but a beacon still lights from the reserve
+        self.stand_next_to(w['beacon'][0])
+        g.press('a', after=10)
+        self.assertEqual(g.u8('beacons_lit') & 1, 1)
+        # a truly full table: the beacon is refused and progression does not advance
+        self.fill_mods(max_mods)
+        self.stand_next_to(w['beacon'][2])
+        g.press('a', after=10)
+        self.assertEqual(g.u8('beacons_lit') & 4, 0)
+        self.assertNotEqual(self.mods().get(w['beacon'][2]), MT['MT_BEACON_LIT'])
 
     def test_title_select_needs_a_hold_over_a_save(self):
         g = self.g
