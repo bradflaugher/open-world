@@ -198,6 +198,9 @@ static uint8_t eq_h, eq_t;
 
 /* drone */
 static uint8_t d_on, d_wave, d_note, d_code, d_st, d_t, d_tw, d_tn, d_tl, d_last, d_wob;
+/* breathing: in the world the drone sounds for 5-10 s, fades out, rests 2-4 s, and swells back.
+   An unbroken tone that never changes is what a crashed Game Boy sounds like. */
+static uint8_t d_br, d_bt, d_blv, d_rng;
 
 /* wind */
 static uint8_t w_on, w_lvl, w_tgt, w_tmr, w_rate, w_frate, w_out;
@@ -326,6 +329,10 @@ static void drone_kill(void)
 
 static void drone_request(uint8_t w, uint8_t n, uint8_t lvl)
 {
+    if (d_br) {                             /* resting: take the change silently */
+        d_blv = lvl;
+        lvl = 4;
+    }
     d_tw = w;
     d_tn = n;
     d_tl = lvl;
@@ -340,11 +347,45 @@ static void drone_request(uint8_t w, uint8_t n, uint8_t lvl)
     d_t = 2;                                /* start next frame: keeps commit + load apart */
 }
 
+static uint8_t drone_rnd(void)
+{
+    uint8_t x = d_rng;
+    x ^= (uint8_t)(x << 3);
+    x ^= (uint8_t)(x >> 5);
+    x ^= (uint8_t)(x << 4);
+    d_rng = x ? x : 0x5D;
+    return d_rng;
+}
+
+static void drone_breathe(void)
+{
+    if (fc & 7)
+        return;
+    if (d_bt) {
+        d_bt--;
+        return;
+    }
+    if (!d_br) {                            /* breathe out: fade to silence and rest */
+        d_br = 1;
+        d_blv = d_tl;
+        d_tl = 4;
+        d_bt = (uint8_t)(16 + (drone_rnd() & 15));      /* 2.1-4.1 s incl. the fade */
+    } else {                                /* breathe in */
+        d_br = 0;
+        d_tl = d_blv;
+        d_bt = (uint8_t)(40 + (drone_rnd() & 31));      /* 5.3-9.5 s */
+    }
+    d_st = DS_SLIDE;
+    d_t = 1;
+}
+
 static void drone_frame(void)
 {
     if (d_st == DS_IDLE) {
         if (d_wob && d_on && !(fc & 31))
             drone_pitch((uint8_t)(fc & 32));
+        if ((lay & LAY_LOOPS) && d_on)
+            drone_breathe();
         return;
     }
     if (--d_t)
@@ -847,6 +888,11 @@ static void motif_frame(void)
 /* ------------------------------------------------------------------ modes */
 static void switch_mode(uint8_t m)
 {
+    if (d_br) {                             /* a new mode starts with the drone breathing in */
+        d_br = 0;
+        d_tl = d_blv;
+    }
+    d_bt = 40;
     snd_cur_mode = m;
     lay = 0;
     work = 0;
@@ -1148,6 +1194,9 @@ void snd_core_init(void)
     d_last = 0xFF;
     d_wave = 0xFF;
     d_wob = 0;
+    d_br = 0;
+    d_bt = 40;
+    d_rng = 0x5D;
     w_on = 0;
     w_out = 0;
     w_lvl = 0;

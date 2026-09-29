@@ -524,7 +524,7 @@ class RomTest(Base):
         g.set_u8('stones', 5)
         g.press('a', after=6)
         self.assertEqual(g.u8('cairn_n'), 1)
-        self.assertEqual(g.u8('stones'), 4)
+        self.assertEqual(g.u8('stones'), 5)          # the pouch never runs out
         c = (g.u16('cairns'), g.u16('cairns', 2))
         self.assertEqual(self.mods().get(c), MT['MT_CAIRN'])
         g.run(4)
@@ -729,15 +729,16 @@ class RomTest(Base):
         self.assertTrue(save_copy_valid(fixed, 0x1000, n), 'backup not repaired')
         self.assertEqual(fixed[0x1000:0x1000 + n + 2], fixed[0:n + 2])
 
-    def fill_mods(self, count):
-        """pad the mods table with harmless far-away entries up to `count`"""
+    def fill_mods(self, count, mt='MT_TABLE'):
+        """pad the mods table with harmless far-away entries up to `count` (the default kind is
+        one the engine never tidies away)"""
         g = self.g
         a = g.addr('world_mods')
         k = g.u8('world_mod_count')
         for i in range(k, count):
             b = a + i * 5
             x, y = 1000 + i * 3, 1000
-            for j, v in enumerate((x & 0xFF, x >> 8, y & 0xFF, y >> 8, MT['MT_ASH'])):
+            for j, v in enumerate((x & 0xFF, x >> 8, y & 0xFF, y >> 8, MT[mt])):
                 g.pb.memory[b + j] = v
         g.set_u8('world_mod_count', count)
         g.run(4)
@@ -767,6 +768,109 @@ class RomTest(Base):
         g.press('a', after=10)
         self.assertEqual(g.u8('beacons_lit') & 4, 0)
         self.assertNotEqual(self.mods().get(w['beacon'][2]), MT['MT_BEACON_LIT'])
+
+    def put_mods(self, cells):
+        """write world edits straight into the mods table (the next teleport reloads the land)"""
+        g = self.g
+        a = g.addr('world_mods')
+        k = g.u8('world_mod_count')
+        for i, ((x, y), mt) in enumerate(cells):
+            b = a + (k + i) * 5
+            for j, v in enumerate((x & 0xFF, x >> 8, y & 0xFF, y >> 8, MT[mt])):
+                g.pb.memory[b + j] = v
+        g.set_u8('world_mod_count', k + len(cells))
+        g.run(2)
+
+    def open_row(self, center, n):
+        """(x, y): x .. x+n on row y all walkable, and the rows above and below too"""
+        cx, cy = center
+        reg = host_region(self.SEED, cx - 30, cy - 30, 61, 61)
+        for r in range(8, 24):
+            for (x, y), m in sorted(reg.items()):
+                if max(abs(x - cx), abs(y - cy)) != r:
+                    continue
+                if all(self.walkable(reg.get((x + i, y + j), 0)) for i in range(n + 1) for j in (-1, 0, 1)):
+                    return x, y
+        self.fail('no open row')
+
+    def cloak_on(self):
+        self.g.set_u8('items', 7)
+        self.g.set_u8('equipped', IT_CLOAK)
+
+    def test_glide_over_a_thick_crag(self):
+        # three crags in a row (the ring is that thick at an angle): the cloak carries you over
+        g = self.g
+        g.new_world(self.SEED)
+        x, y = self.open_row(g.world()['start'], 5)
+        self.put_mods([((x + i, y), 'MT_ROCK') for i in (1, 2, 3)])
+        self.cloak_on()
+        g.teleport(x, y)
+        g.face('right')
+        g.press('a', after=2)
+        self.assertEqual(g.u8('pl_state'), PL_GLIDE)
+        self.assertTrue(g.wait(lambda: g.u8('pl_state') != PL_GLIDE, 200))
+        self.assertEqual((g.u16('pl_mx'), g.u16('pl_my')), (x + 4, y))
+        self.check_land('after a long glide')
+
+    def test_glide_right_after_resting(self):
+        # stop in front of the crags long enough to sit down: the next A still glides
+        g = self.g
+        g.new_world(self.SEED)
+        x, y = self.open_row(g.world()['start'], 4)
+        self.put_mods([((x + i, y), 'MT_ROCK') for i in (1, 2)])
+        self.cloak_on()
+        g.teleport(x, y)
+        g.face('right')
+        self.assertTrue(g.wait(lambda: g.u8('pl_state') == PL_SIT, 400))
+        g.press('a', after=2)
+        self.assertEqual(g.u8('pl_state'), PL_GLIDE)
+        self.assertTrue(g.wait(lambda: g.u8('pl_state') != PL_GLIDE, 200))
+        self.assertEqual((g.u16('pl_mx'), g.u16('pl_my')), (x + 3, y))
+
+    def test_mashing_a_chains_glides(self):
+        # A pressed just before landing is not lost: the next glide starts as you touch down
+        g = self.g
+        g.new_world(self.SEED)
+        x, y = self.open_row(g.world()['start'], 7)
+        self.put_mods([((x + i, y), 'MT_ROCK') for i in (1, 2, 4, 5)])
+        self.cloak_on()
+        g.teleport(x, y)
+        g.face('right')
+        g.press('a', hold=2, after=0)
+        self.assertTrue(g.wait(lambda: g.u8('pl_state') == PL_GLIDE, 4))
+        for _ in range(14):
+            g.press('a', hold=1, after=1)           # mashing
+        self.assertTrue(g.wait(lambda: g.u16('pl_mx') == x + 6 and g.u8('pl_state') != PL_GLIDE, 200))
+        self.assertEqual(g.u16('pl_my'), y)
+
+    def test_a_after_sitting_down_in_the_open_acts(self):
+        # stand at a cold fire long enough that the wanderer sits: one A still lights it
+        g = self.g
+        g.new_world(self.SEED)
+        w = g.world()
+        self.stand_next_to(w['start'])
+        self.assertTrue(g.wait(lambda: g.u8('pl_state') == PL_SIT, 400))
+        g.press('a', after=10)
+        self.assertEqual(self.mods().get(w['start']), MT['MT_FIRE_LIT'])
+        self.assertNotEqual(g.u8('pl_state'), PL_SIT)
+
+    def test_fires_still_light_after_a_long_world(self):
+        # a world's worth of lit fires fills the mods table: the far ones burn down (never the
+        # one you wake at), so the fires on the way to the Heart can still be lit
+        g = self.g
+        g.new_world(self.SEED)
+        w = g.world()
+        start_n = g.u8('world_mod_count')
+        self.fill_mods(96, 'MT_FIRE_LIT')
+        keep = (1000 + start_n * 3, 1000)
+        g.set_u16('respawn_x', keep[0])
+        g.set_u16('respawn_y', keep[1])
+        self.assertTrue(g.wait(lambda: g.u8('world_mod_count') <= 96 - 25, 1200))
+        self.assertEqual(self.mods().get(keep), MT['MT_FIRE_LIT'], 'the respawn fire went out')
+        self.stand_next_to(w['start'])
+        g.press('a', after=10)
+        self.assertEqual(self.mods().get(w['start']), MT['MT_FIRE_LIT'])
+        self.check_land('after the tidy')
 
     def test_title_select_needs_a_hold_over_a_save(self):
         g = self.g

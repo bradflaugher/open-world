@@ -83,7 +83,9 @@ static uint16_t cgb_colour(uint8_t k)
     uint8_t p = (uint8_t)((k >> 2) & 7);
     uint16_t v = pal_rom(pal_phase_from, k);
     if (pal_phase_to != pal_phase_from) v = lerp555(v, pal_rom(pal_phase_to, k), pal_t);
-    if (pal_fog) v = lerp555(v, FOG_COL, (uint8_t)(pal_fog + (pal_fog >> 1)));
+    /* fog veils the land (at most 6/16 of the way to fog grey): it used to go 3/4 of the way,
+       a near white-out that hid the land for minutes on end */
+    if (pal_fog) v = lerp555(v, FOG_COL, (uint8_t)((pal_fog >> 1) + (pal_fog >> 2)));
     if (k < 32 && p == PAL_SKY && pal_band_bright) v = lerp555(v, 0x7FFF, pal_band_bright);
     if (pal_fade) v = lerp555(v, 0x7FFF, pal_fade);
     return v;

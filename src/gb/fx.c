@@ -135,7 +135,8 @@ static void storm_tick(void)
     if (lightning_t) {
         lightning_t--;
         {
-            uint8_t fl = (uint8_t)(lightning_t == 6 || lightning_t == 5 || lightning_t == 2);
+            /* one short flash (it was a double strobe of the whole screen) */
+            uint8_t fl = (uint8_t)(lightning_t == 6 || lightning_t == 5);
             if (fl != pal_flash) { pal_flash = fl; pal_apply(); }
         }
         return;
@@ -161,7 +162,6 @@ void hud_update(void) BANKED
         y = (uint8_t)(y - ((item_pulse >> 2) & 1));
         if ((item_pulse & 8) && item_pulse > 60) show = 0;
     }
-    if (equipped == IT_STONES && !stones && (vbl_frames & 32)) show = 0;
     /* only touch OAM when something changed */
     if (hud_key[0] == full && hud_key[1] == blink && hud_key[2] == tile && hud_key[3] == y &&
         hud_key[4] == show && hud_key[5] == 1) return;

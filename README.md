@@ -26,7 +26,8 @@ and wraps at the edges.
 Light the three **beacons**. Each is guarded differently: brambles, open water, a ring of crags.
 Each one gives you what you need for the next. When all three burn, a fourth light rises on the
 horizon: **the Heart**. Walk to it and sit down. The world dissolves and a new one begins, and
-the cairns you built are still standing in it as ancient ruins.
+the cairns you built are still standing in it as ancient ruins. Every new world, including the
+one after the Heart, is generated from a fresh seed: new coast, new beacons, new roads.
 
 ## The idea
 
@@ -87,8 +88,8 @@ until the flame goes out.
 | Item | Found | Verbs |
 | --- | --- | --- |
 | Lantern | from the start | light fires and beacons, burn brambles, glow at night |
-| Stones | the shrine at the first beacon | build a cairn (you can see it on the horizon and the map, and it carries into the next world), make stepping stones across shallows, pick your cairns back up. They refill at fires. |
-| Cloak | the shrine at the second beacon | glide three cells over rock, water or thorns |
+| Stones | the shrine at the first beacon | build a cairn (you can see it on the horizon and the map, and it carries into the next world), make stepping stones across shallows, pick your cairns back up. The pouch never runs out (you can keep 32 cairns standing; the oldest comes down when you build another). |
+| Cloak | the shrine at the second beacon | glide over rock, water or thorns: three cells, or two or four when that is where the ground is. Facing a diagonal, it also tries the two straight directions. An A pressed just before you land starts the next glide. |
 
 A small pictogram bobs over anything the item in your hand can act on.
 

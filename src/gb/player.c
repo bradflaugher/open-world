@@ -35,6 +35,8 @@ static uint16_t act_x, act_y;         /* nearby interactable (fire, beacon, shri
 uint8_t act_mt;
 static uint8_t hint_bob;
 uint8_t ending_req;
+static uint8_t a_buf;          /* A pressed mid-glide: acted on at the landing */
+static uint8_t ca_v;           /* can_act(), cached */
 
 
 uint8_t blocked_mt(uint8_t mt) BANKED
@@ -167,16 +169,45 @@ static uint8_t own_cairn(uint16_t x, uint16_t y)
     return 0;
 }
 
+/* Glide landing: in direction d, the nearest free cell 3 away (else 4, else 2) with only glide-able
+ * (or open) ground on the way. The crag ring is two cells thick straight on but thicker at an angle,
+ * so a fixed 3-cell hop was refused from many approaches. Returns the distance, 0 if none. */
+static const uint8_t glide_try[3] = { 3, 4, 2 };
+static uint8_t glide_len(uint8_t d)
+{
+    int8_t dx = dir_dx[d], dy = dir_dy[d];
+    uint8_t k, j, m, far = 0;
+    /* cells 1..far that the wanderer passes over (read once, in order) */
+    uint8_t over[4];
+    for (k = 1; k <= 4; k++) {
+        m = land_mt((uint16_t)(pl_mx + dx * (int8_t)k), (uint16_t)(pl_my + dy * (int8_t)k));
+        over[k - 1] = m;
+        if (!(mt_flags[m] & MTF_GLIDE) && blocked_mt(m)) break;    /* a wall the cloak can't pass */
+        far = k;
+    }
+    for (j = 0; j < 3; j++) {
+        k = glide_try[j];
+        /* the landing may be the first cell the cloak can't pass (it is solid then: refused) */
+        if (k > far + 1 || k > 4) continue;
+        if (!blocked_mt(over[k - 1])) return k;
+    }
+    return 0;
+}
+
+static uint8_t glide_dir, glide_k;
+/* facing first; on a diagonal, also the two straight directions it is made of */
 static uint8_t glide_ok(void)
 {
-    int8_t dx = dir_dx[pl_face], dy = dir_dy[pl_face];
-    uint8_t k, m;
-    for (k = 1; k <= 2; k++) {
-        m = land_mt((uint16_t)(pl_mx + dx * k), (uint16_t)(pl_my + dy * k));
-        if (!(mt_flags[m] & MTF_GLIDE) && blocked_mt(m)) return 0;
+    uint8_t d = pl_face, k;
+    if ((k = glide_len(d)) != 0) { glide_dir = d; glide_k = k; return 1; }
+    if (d & 1) {
+        uint8_t a = (uint8_t)((d + 7) & 7), b = (uint8_t)((d + 1) & 7);
+        /* prefer the side that is actually blocked (the one the wanderer is pressing into) */
+        if (!blocked_mt(land_rel(dir_dx[a], dir_dy[a]))) { uint8_t t = a; a = b; b = t; }
+        if ((k = glide_len(a)) != 0) { glide_dir = a; glide_k = k; return 1; }
+        if ((k = glide_len(b)) != 0) { glide_dir = b; glide_k = k; return 1; }
     }
-    m = land_mt((uint16_t)(pl_mx + dx * 3), (uint16_t)(pl_my + dy * 3));
-    return (uint8_t)!blocked_mt(m);
+    return 0;
 }
 
 /* what A would do right now (for the hint): 0 nothing */
@@ -191,7 +222,7 @@ static uint8_t can_act(void)
     case IT_LANTERN:
         return (uint8_t)(m == MT_BRAMBLE);
     case IT_STONES:
-        if (m == MT_SHALLOW) return (uint8_t)(stones != 0);
+        if (m == MT_SHALLOW) return 1;
         if (m == MT_CAIRN && own_cairn(tgt_x, tgt_y)) return 1;
         return 0;
     case IT_CLOAK:
@@ -273,26 +304,29 @@ static void act(void)
             cairn_n--;
             cairns[i] = cairns[cairn_n];
             edit_remove(tgt_x, tgt_y);
-            if (stones < STONES_MAX) stones++;
             sfx_play(SFX_PICKUP);
             save_req = 1;
             return;
         }
-        if (!stones) break;
+        /* the pouch never runs out: the land is full of stones */
         if (m == MT_SHALLOW) {
             if (!edit_mt(tgt_x, tgt_y, MT_STEPSTONE)) return;
-            stones--;
             sfx_play(SFX_STEPSTONE);
             save_req = 1;
             return;
         }
         if (!blocked_mt(m) && m != MT_STEPSTONE && m != MT_ROAD && !under_me(tgt_x, tgt_y) &&
-            edit_room(EDIT_RESERVE) && cairn_n < MAX_CAIRNS) {
+            edit_room(EDIT_RESERVE + 1)) {
+            if (cairn_n >= MAX_CAIRNS) {
+                /* every cairn is standing: the oldest one is taken down to build this one */
+                edit_remove(cairns[0].x, cairns[0].y);
+                cairn_n--;
+                memmove(cairns, cairns + 1, sizeof(wpos_t) * cairn_n);
+            }
             if (!edit_mt_r(tgt_x, tgt_y, MT_CAIRN, EDIT_RESERVE)) return;
             cairns[cairn_n].x = tgt_x;
             cairns[cairn_n].y = tgt_y;
             cairn_n++;
-            stones--;
             sfx_play(SFX_CAIRN);
             save_req = 1;
             return;
@@ -300,11 +334,13 @@ static void act(void)
         break;
     case IT_CLOAK:
         if (glide_ok()) {
-            int8_t dx = dir_dx[pl_face], dy = dir_dy[pl_face];
+            int8_t dx = dir_dx[glide_dir], dy = dir_dy[glide_dir];
+            int16_t len = (int16_t)((uint16_t)glide_k << 4);
+            pl_face = glide_dir;
             glide_mx0 = pl_mx; glide_my0 = pl_my;
             glide_sx0 = pl_sx; glide_sy0 = pl_sy;
-            glide_dx = (int16_t)(dx * 48 + (8 - (int8_t)pl_sx));
-            glide_dy = (int16_t)(dy * 48 + (12 - (int8_t)pl_sy));
+            glide_dx = (int16_t)((dx < 0 ? -len : dx ? len : 0) + (8 - (int8_t)pl_sx));
+            glide_dy = (int16_t)((dy < 0 ? -len : dy ? len : 0) + (12 - (int8_t)pl_sy));
             glide_f = 0;
             pl_state = PL_GLIDE;
             sfx_play(SFX_GLIDE);
@@ -351,10 +387,14 @@ void player_update(void) BANKED
             land_set(burn_x, burn_y, MT_BRAMBLE);    /* refused: the thorns are still there */
     }
     if (pl_state == PL_GLIDE) {
+        /* an A in the last few frames of a glide is kept for the landing (chained glides) */
+        if (pressed & J_A) a_buf = 10;
+        else if (a_buf) a_buf--;
         glide_tick();
         hint_on = 0;
         return;
     }
+    if (a_buf) { a_buf = 0; pressed |= J_A; }
     if (keys & J_LEFT) dx = -1;
     if (keys & J_RIGHT) dx = 1;
     if (keys & J_UP) dy = -1;
@@ -414,7 +454,14 @@ void player_update(void) BANKED
     /* reaching the revealed Heart is enough */
     if (act_mt == MT_HEART && heart_revealed && pl_state != PL_GLIDE) ending_req = 1;
     if (pressed & J_A) {
-        if (pl_state == PL_SIT) { pl_state = PL_STAND; ambient_tempo(0); }
+        if (pl_state == PL_SIT) {
+            /* resting away from a fire (the wanderer sits whenever you stop for a moment): A
+               stands up and acts at once, so a pause in front of the crags or a cold fire does
+               not swallow the next press. By a fire, A just gets up. */
+            pl_state = PL_STAND;
+            ambient_tempo(0);
+            if (ca_v && !near_warm) act();
+        }
         else act();
     }
     if (pressed & J_SELECT) {
@@ -431,7 +478,7 @@ void player_update(void) BANKED
     hint_on = 0;
     /* can_act (glide probes, cairn search) only when the target or the inputs to it changed */
     {
-        static uint8_t ca_v, ca_key[3];
+        static uint8_t ca_key[3];
         if (ft_new || ca_key[0] != equipped || ca_key[1] != stones || ca_key[2] != heart_revealed) {
             ft_new = 0;
             ca_key[0] = equipped; ca_key[1] = stones; ca_key[2] = heart_revealed;

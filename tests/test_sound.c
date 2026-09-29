@@ -197,7 +197,7 @@ static void test_world_all(void)
                 CHECK(trig[1] >= 1, "%s: CH2 echoes (%lu)", what, trig[1]);
                 CHECK(trig[2] == 1, "%s: drone triggered once (%lu)", what, trig[2]);
                 CHECK(trig[3] >= 5, "%s: wind moves (%lu)", what, trig[3]);
-                CHECK(host_snd_regs[0x1A] == 0x80 && host_snd_regs[0x1C] != 0, "%s: drone audible", what);
+                CHECK(host_snd_regs[0x1A] == 0x80, "%s: drone on (it breathes: see test_drone_breathes)", what);
                 CHECK(trig[0] < 60 * 50 / 8, "%s: CH1 not frantic (%lu)", what, trig[0]);
             }
 }
@@ -600,11 +600,39 @@ static void test_cost(void)
     CHECK(sum_tick_writes < n_ticks * 3, "avg < 3 writes per tick");
 }
 
+/* the world drone breathes: it never holds one unbroken tone for long (that is what a crashed
+   Game Boy sounds like), but it is there most of the time */
+static void test_drone_breathes(void)
+{
+    uint8_t b;
+    for (b = 0; b < B_COUNT; b++) {
+        int f, run = 0, longest = 0, rests = 0, quiet = 0, loud_prev = 0, total = 60 * 90;
+        fresh();
+        ambient_seed((uint16_t)(0x2468 + b));
+        ambient_set(b, b & 1 ? PH_NIGHT : PH_DAY, WX_CLEAR);
+        ambient_mode(AMB_WORLD);
+        ticks(60 * 3);
+        for (f = 0; f < total; f++) {
+            int loud;
+            tick();
+            loud = (host_snd_regs[0x1A] & 0x80) && (host_snd_regs[0x1C] & 0x60);
+            if (loud) { run++; if (run > longest) longest = run; }
+            else { run = 0; quiet++; if (loud_prev) rests++; }
+            loud_prev = loud;
+        }
+        check_clean("drone breathing");
+        CHECK(longest < 60 * 12, "biome %u: the drone held one breath for %d frames", b, longest);
+        CHECK(rests >= 6, "biome %u: the drone rested only %d times in 90 s", b, rests);
+        CHECK(quiet < total / 2, "biome %u: the drone was silent %d of %d frames", b, quiet, total);
+    }
+}
+
 int main(void)
 {
     host_snd_hook = hook;
     test_init();
     test_world_all();
+    test_drone_breathes();
     test_density();
     test_modes();
     test_transitions();
