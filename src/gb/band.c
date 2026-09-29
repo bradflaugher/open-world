@@ -20,6 +20,7 @@ static uint8_t mark_rr;
 static uint8_t cairn_near = 0xFF;
 uint8_t band_mark_x[5];
 static uint8_t mark_last_a, mark_last_state = 0xFF;
+static uint8_t mark_tile[5], mark_pal[5];   /* tile 0 = hidden */
 
 static uint16_t brng;
 static uint8_t brnd(void)
@@ -175,7 +176,7 @@ void band_update(void) BANKED
 {
     uint16_t tgt = (uint16_t)face_bearing() << 8;
     int16_t d = (int16_t)(tgt - band_ang), s;
-    uint8_t i, a, x, tile, pal, show;
+    uint8_t i, a, x;
     /* ease towards the facing direction (shortest way round) */
     if (pl_state != PL_SLEEP && d) {
         s = (int16_t)(d >> 4);
@@ -191,29 +192,40 @@ void band_update(void) BANKED
     i = (uint8_t)(beacons_lit | (heart_revealed << 3) | ((cairn_near != 0xFF) << 4));
     if (a == mark_last_a && i == mark_last_state && !mark_new) return;
     if (FRAME_LATE()) return;
+    if (i != mark_last_state) {         /* tiles / palettes only when a state changes */
+        uint8_t k;
+        for (k = 0; k < 5; k++) {
+            uint8_t show = 1, tile, pal;
+            if (k < 3) {
+                if (beacons_lit & (1 << k)) { tile = SPR_BAND_BEACON_LIT; pal = OPAL_LIGHT | S_PALETTE; }
+                else { tile = SPR_BAND_BEACON; pal = OPAL_BAND; }
+            } else if (k == 3) {
+                tile = SPR_BAND_HEART; pal = OPAL_LIGHT | S_PALETTE;
+                show = heart_revealed;
+            } else {
+                tile = SPR_BAND_CAIRN; pal = OPAL_BAND;
+                show = (uint8_t)(cairn_near != 0xFF);
+            }
+            if (!is_cgb) pal &= S_PALETTE;
+            mark_tile[k] = show ? tile : 0;
+            mark_pal[k] = pal;
+        }
+    }
     mark_last_a = a;
     mark_last_state = i;
     mark_new = 0;
-    for (i = 0; i < 5; i++) {
-        show = 1;
-        if (i < 3) {
-            if (beacons_lit & (1 << i)) { tile = SPR_BAND_BEACON_LIT; pal = OPAL_LIGHT | S_PALETTE; }
-            else { tile = SPR_BAND_BEACON; pal = OPAL_BAND; }
-        } else if (i == 3) {
-            tile = SPR_BAND_HEART; pal = OPAL_LIGHT | S_PALETTE;
-            show = heart_revealed;
-        } else {
-            tile = SPR_BAND_CAIRN; pal = OPAL_BAND;
-            show = (uint8_t)(cairn_near != 0xFF);
+    {
+        uint8_t *o = &oam[SP_MARK << 2];
+        for (i = 0; i < 5; i++, o += 4) {
+            x = (uint8_t)(mark_b[i] - a + 80);
+            if (!mark_tile[i] || x < 4 || x > 156) {
+                o[0] = 0;
+                band_mark_x[i] = 0xFF;
+                continue;
+            }
+            band_mark_x[i] = x;
+            o[0] = 16 + 8; o[1] = (uint8_t)(x + 8 - 4); o[2] = mark_tile[i]; o[3] = mark_pal[i];
         }
-        x = (uint8_t)(mark_b[i] - a + 80);
-        if (!show || x < 4 || x > 156) {
-            spr_hide((uint8_t)(SP_MARK + i));
-            band_mark_x[i] = 0xFF;
-            continue;
-        }
-        band_mark_x[i] = x;
-        if (!is_cgb) pal &= S_PALETTE;
-        spr_set((uint8_t)(SP_MARK + i), (uint8_t)(x + 8 - 4), (uint8_t)(16 + 8), tile, pal);
     }
+
 }

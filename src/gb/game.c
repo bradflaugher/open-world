@@ -665,7 +665,7 @@ void world_frame(void) BANKED
     dbg_stage = 7;
     if (!warmth) request(REQ_WHITEOUT);
     PSTAGE(PF_COMMIT);
-    if (prof_t > dbg_pmax[PF_END]) dbg_pmax[PF_END] = prof_t;
+    if (prof_t > dbg_pmax[PF_END]) { dbg_pmax[PF_END] = prof_t; dbg_pcur[PF_END] = prof_t; memcpy(dbg_pworst, dbg_pcur, 16); }
     if (prof_t > dbg_hook_ly) dbg_hook_ly = prof_t;
 }
 

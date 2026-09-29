@@ -111,7 +111,7 @@ static void footstep(void)
 
 /* ---- targets ---- */
 static uint16_t ft_mx, ft_my;
-static uint8_t ft_sx, ft_sy, ft_face = 0xFF, ft_age, ft_near = 0xFF;
+static uint8_t ft_sx, ft_sy, ft_face = 0xFF, ft_age, ft_near = 0xFF, ft_new = 1;
 static void find_targets(void)
 {
     int8_t dx = dir_dx[pl_face], dy = dir_dy[pl_face];
@@ -119,6 +119,7 @@ static void find_targets(void)
     uint8_t i, m, cell_moved;
     cell_moved = (uint8_t)(ft_mx != pl_mx || ft_my != pl_my || land_changed || ++ft_age >= 32);
     if (!cell_moved && ft_sx == pl_sx && ft_sy == pl_sy && ft_face == pl_face) return;
+    ft_new = 1;
     ft_sx = pl_sx; ft_sy = pl_sy; ft_face = pl_face;
     /* probe 7 px beyond the hitbox edge in the facing direction */
     vx = (int8_t)(pl_sx + (dx > 0 ? HB_R + 8 : dx < 0 ? HB_L - 8 : 0));
@@ -422,7 +423,17 @@ void player_update(void) BANKED
 
     /* hint: bobbing pictogram above whatever A would act on */
     hint_on = 0;
-    if (pl_state != PL_SIT && can_act()) {
+    /* can_act (glide probes, cairn search) only when the target or the inputs to it changed */
+    {
+        static uint8_t ca_v, ca_key[3];
+        if (ft_new || ca_key[0] != equipped || ca_key[1] != stones || ca_key[2] != heart_revealed) {
+            ft_new = 0;
+            ca_key[0] = equipped; ca_key[1] = stones; ca_key[2] = heart_revealed;
+            ca_v = can_act();
+        }
+        m = ca_v;
+    }
+    if (pl_state != PL_SIT && m) {
         uint16_t hx = act_mt != 0xFF ? act_x : tgt_x, hy = act_mt != 0xFF ? act_y : tgt_y;
         int16_t sx = (int16_t)((int16_t)(hx - cam_mx) * 16 - cam_sx);
         int16_t sy = (int16_t)((int16_t)(hy - cam_my) * 16 - cam_sy);

@@ -22,7 +22,7 @@ uint16_t dbg_vbl_count, dbg_nest;
 uint8_t dbg_nest_at[8];
 extern volatile uint8_t dbg_stage;
 uint8_t dbg_count_on;
-uint8_t dbg_pmax[16];
+uint8_t dbg_pmax[16], dbg_pcur[16], dbg_pworst[16];
 uint16_t dbg_phist[17];
 uint8_t prof_t;
 uint8_t dbg_vbl_ly[2];
