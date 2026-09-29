@@ -12,8 +12,10 @@ extern uint16_t land_x0, land_y0;       /* committed window origin (metatiles) *
 extern uint8_t land_cache[256];         /* [(my & 15) << 4 | (mx & 15)] */
 extern uint8_t land_job;                /* 0 idle, 1 col+, 2 col-, 3 row+, 4 row- */
 extern uint16_t dbg_mt_calls;
+extern uint8_t edge_t[];                /* RAM copy of edge_tiles (flattened) */
 extern uint8_t land_changed;           /* set on any cache change (consumers clear it) */           /* world_mt calls made by the streamer (tests) */
 
+void land_init(void);                                /* once at boot */
 void land_refill(uint16_t cam_mx, uint16_t cam_my);  /* full synchronous load (LCD may be on) */
 /* stream towards the camera's window; budget = world_mt calls allowed this frame.
    Returns 1 if the window lags so far behind that garbage could show (caller refills),

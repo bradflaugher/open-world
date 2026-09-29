@@ -3,7 +3,8 @@
 ; _stat_isr : raw STAT vector (no GBDK dispatcher). Fires at LYC = 23 and switches the screen
 ;             from the horizon band (map 0x9C00) to the land (map 0x9800) during the HBlank of
 ;             line 23, so line 24 is the first land line with no glitch.
-; _bq_drain : VBlank: write queued land metatiles (4 tiles, + 4 CGB attributes) to map 0x9800.
+; _bq_drain : VBlank: write queued land metatiles (4 tiles from the entry, + 4 CGB attributes
+;             of its metatile) to map 0x9800.
 ; _vq_drain : VBlank: write queued single tiles (+ attributes) anywhere in the BG maps.
 
     .module isr
@@ -40,7 +41,7 @@ _stat_isr::
     pop af
     reti
 
-; ---- land metatile queue: entry = addr lo, addr hi, mt, pad (64 entries) ----
+; ---- land metatile queue: entry = addr lo, addr hi, mt, t0..t3, pad (64 x 8 bytes) ----
 ; All four tiles of a metatile slot share one 256-byte page (TL low byte <= 222), so only E moves.
 _bq_drain::
     ld a,(_bq_budget)
@@ -51,30 +52,22 @@ _bq_drain::
     ld a,(_bq_head)
     cp a,c
     ret z
-    ld a,c
-    add a,a
-    add a,a
-    ld hl,#_bq
-    add a,l
-    ld l,a
-    adc a,h
-    sub a,l
-    ld h,a
+    ld l,c                  ; hl = bq + tail * 8
+    ld h,#0
+    add hl,hl
+    add hl,hl
+    add hl,hl
+    ld de,#_bq
+    add hl,de
     ld e,(hl)
     inc hl
     ld d,(hl)
     inc hl
-    ld a,(hl)               ; mt
+    ld a,(hl+)              ; mt
     add a,a
     add a,a
-    ld c,a                  ; mt * 4
-    ld hl,#_mt_t
-    add a,l
-    ld l,a
-    adc a,h
-    sub a,l
-    ld h,a
-    ld a,(hl+)
+    ld c,a                  ; mt * 4 (attributes)
+    ld a,(hl+)              ; the four tiles, from the entry
     ld (de),a
     inc e
     ld a,(hl+)

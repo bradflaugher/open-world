@@ -24,8 +24,8 @@ void frame_sync(void);                    /* wait for the next VBlank (counts mi
 void split_enable(uint8_t on);
 
 /* ---- VRAM queues, drained in VBlank ---- */
-/* land metatile writes: ring slot (0..15, 0..15) of map 0x9800 */
-void bq_push(uint8_t col, uint8_t row, uint8_t mt);
+/* land metatile writes: ring slot (0..15, 0..15) of map 0x9800, its 4 tiles (attrs from mt) */
+void bq_push(uint8_t col, uint8_t row, uint8_t mt, const uint8_t *t);
 uint8_t bq_pending(void);
 /* single tile (+CGB attribute) writes anywhere in the BG maps */
 void vq_push(uint16_t addr, uint8_t tile, uint8_t attr);

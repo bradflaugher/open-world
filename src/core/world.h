@@ -100,7 +100,9 @@ void    world_init(uint16_t seed) WBANKED;
 uint8_t world_mt(uint16_t mx, uint16_t my);    /* final metatile incl. mods; the hot path */
 uint8_t world_mt_base(uint16_t mx, uint16_t my);/* generated metatile, ignoring mods */
 uint8_t world_biome(uint16_t mx, uint16_t my); /* biome of that cell (cheap-ish) */
-uint8_t world_map_shade(uint16_t mx, uint16_t my); /* 0..3 map shade for the map screen (fast, coarse) */
+/* 0..3 map shade (0 light: shore/desert/tundra/shallows, 1 meadow/ruins, 2 forest/rock/ash,
+ * 3 sea) at 8-metatile resolution, for the map screen (cheapest scanned in rows) */
+uint8_t world_map_shade(uint16_t mx, uint16_t my);
 uint8_t world_detail(uint16_t mx, uint16_t my); /* 0..255 hash for per-cell variation (tile flips, anims) */
 /* Optional: warm the caches for the 4x4 block holding (mx, my) one lattice point at a time
  * (<= ~2500 M-cycles per call). Call it once per frame for the next column / row the scroll
@@ -188,12 +190,13 @@ void    w_reset(void);                    /* clear all caches (seed or layout ch
 /* cold helpers called (rarely) from the hot path; banked on the Game Boy */
 void    w_lattice(uint16_t lx, uint16_t ly) WBANKED;  /* fields at lattice point (mx>>2, my>>2) */
 void    w_lattice_reset(void) WBANKED;
-void    w_poi_check(void) WBANKED;        /* validate a road POI (lattice at its centre) */
+void    w_map_point(uint16_t px, uint16_t py) WBANKED;  /* approximate fields at an 8-grid point */
 uint8_t w_poi_mt(uint8_t ax, uint8_t ay, uint8_t d) WBANKED; /* POI tile at |offset|, or 0xFF */
 #define W_SP_NONE  0xFF                   /* w_piece: no set piece here */
 #define W_SP_CLEAR 0xFE                   /* w_piece: start clearing (base unless solid) */
 uint8_t w_piece(uint16_t mx, uint16_t my, uint8_t mask) WBANKED;
 uint8_t w_block_mask(uint16_t kx, uint16_t ky, uint8_t mask) WBANKED; /* pieces touching a 4x4 block */
+uint16_t w_block_roads(uint16_t kx, uint16_t ky, uint8_t mask) WBANKED; /* its causeway cells */
 uint8_t w_ruin(uint16_t mx, uint16_t my, uint8_t d, uint8_t ground) WBANKED;
 uint8_t w_old_cairn(uint16_t mx, uint16_t my) WBANKED;
 #define W_POI_NONE 0

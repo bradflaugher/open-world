@@ -370,11 +370,20 @@ uint8_t w_classify(uint8_t e, uint8_t m, uint8_t s)
 static const uint8_t shade[B_COUNT] = { 3, 0, 0, 1, 2, 0, 0, 2, 2, 1 };
 
 /* 0 = light (shore, desert, tundra, shallows), 1 = meadow / ruins, 2 = forest / rock / ash,
- * 3 = sea. Evaluates one lattice point (4-metatile resolution). */
+ * 3 = sea, at 8-metatile resolution (the nearest point of an 8-metatile grid; see w_map_point).
+ * Cheapest when the map is scanned in rows. */
+static uint16_t ms_x = 0xFFFF, ms_y = 0xFFFF;
+static uint8_t ms_v;
 uint8_t world_map_shade(uint16_t mx, uint16_t my)
 {
-    w_lattice(mx >> 2, my >> 2);
-    return shade[w_classify(w_le, w_lm, w_ls)];
+    uint16_t px = (uint16_t)(mx + 4) >> 3, py = (uint16_t)(my + 4) >> 3;
+    if (px != ms_x || py != ms_y) {
+        ms_x = px;
+        ms_y = py;
+        w_map_point(px, py);
+        ms_v = shade[w_classify(w_le, w_lm, w_ls)];
+    }
+    return ms_v;
 }
 
 /* ---- terrain for one cell ---------------------------------------------------------------- */
@@ -444,6 +453,7 @@ static uint8_t bcc[W_BC_N][12];                   /* corners of each block (once
 static uint8_t bck[W_BC_N];                       /* block initialised: corners, bpm, bpn */
 static uint8_t bpm[W_BC_N];                       /* set pieces touching the block (W_SPM_*) */
 static uint8_t bpn[W_BC_N];                       /* the block's POI can reach into it */
+static uint8_t brm[W_BC_N][2];                    /* causeway cells of the block (bit per cell) */
 static uint8_t *ckm, *ckv;                        /* current block's metatiles / valid bits */
 static uint16_t ck_x = 0xFFFF, ck_y = 0xFFFF;     /* current block */
 static uint8_t ckslot;
@@ -467,6 +477,7 @@ static uint8_t spk_on;                            /* ... its W_SPM_* mask */
 static void lp_reset(void);
 void w_reset(void)
 {
+    ms_x = 0xFFFF;
     lp_reset();
     w_lattice_reset();
     w_pq_x = w_pq_y = 0xFFFF;
@@ -475,36 +486,43 @@ void w_reset(void)
 }
 
 
-/* Lattice point cache: 16 entries, slot (lx + 5 ly) & 15.
- * Holds the corners of the cached blocks and the points computed ahead by world_prefetch. */
-#define LP_N 16
-static uint16_t lpx[LP_N], lpy[LP_N];
-static uint8_t lpv[LP_N][3];
-
-static uint8_t lp_slot(uint16_t lx, uint16_t ly)
-{
-    uint8_t y = (uint8_t)ly;
-    return (uint8_t)(((uint8_t)lx + (uint8_t)(y << 2) + y) & (LP_N - 1));
-}
+/* Lattice point cache: 64 entries, slot ((ly & 7) << 3) | (lx & 7): any 8x8 window of lattice
+ * points (32x32 metatiles: the view, its streaming ring and a prefetch margin) never collides.
+ * Tags hold bits 3..10 of lx, ly; bits 11+ are a global region (offset by 1024 lattice points so
+ * that the region edges are far from the start), and the cache is flushed when it changes. */
+#define LP_N 64
+static uint8_t lptx[LP_N], lpty[LP_N], lpv[LP_N][3];
+static uint8_t lp_rx = 0xFF, lp_ry = 0xFF;
 
 static void lp_reset(void)
 {
     uint8_t i;
-    for (i = 0; i < LP_N; i++) lpx[i] = 0xFFFF;
+    for (i = 0; i < LP_N; i++) lpty[i] = 0xFF, lptx[i] = 0xFF;
+    lp_rx = lp_ry = 0xFF;
 }
 
 /* lattice point (lx, ly) into d[0], d[4], d[8]; computes it if needed (0: cached, 1: computed) */
 static uint8_t lp_get(uint16_t lx, uint16_t ly, uint8_t *d)
 {
-    uint8_t j = lp_slot(lx, ly), r = 0;
-    uint8_t *v = lpv[j];
-    if (lpx[j] != lx || lpy[j] != ly) {
+    uint8_t j, tx, ty, r = 0, *v;
+    tx = (uint8_t)((uint16_t)(lx + 1024) >> 11);
+    ty = (uint8_t)((uint16_t)(ly + 1024) >> 11);
+    if (tx != lp_rx || ty != lp_ry) {                /* another region: flush */
+        for (j = 0; j < LP_N; j++) lptx[j] = 0xFF, lpty[j] = 0xFF;
+        lp_rx = tx;
+        lp_ry = ty;
+    }
+    j = (uint8_t)((((uint8_t)ly & 7) << 3) | ((uint8_t)lx & 7));
+    tx = (uint8_t)(lx >> 3);
+    ty = (uint8_t)(ly >> 3);
+    v = lpv[j];
+    if (lptx[j] != tx || lpty[j] != ty) {
         w_lattice(lx, ly);
         v[0] = w_le;
         v[1] = w_lm;
         v[2] = w_ls;
-        lpx[j] = lx;
-        lpy[j] = ly;
+        lptx[j] = tx;
+        lpty[j] = ty;
         r = 1;
     }
     d[0] = v[0];
@@ -573,8 +591,12 @@ static uint8_t poi_cell(uint8_t lx, uint8_t ly, uint8_t b)
         if (b < B_SHORE || b == B_ROCK) return 0xFF;   /* the road only runs over land */
     } else if (ax > 2 || ay > 2) return 0xFF;
     if (!w_pq_ok) {
-        if (w_pq_type == W_POI_ROAD) w_poi_check();
-        else {
+        if (w_pq_type == W_POI_ROAD) {
+            /* a road ending in the sea: needs shore at its centre (a lattice point) */
+            w_pq_ok = 1;
+            lp_get((uint16_t)((w_pq_x + w_pq_px) >> 2), (uint16_t)((w_pq_y + w_pq_py) >> 2), pf_tmp);
+            if (w_classify(pf_tmp[0], pf_tmp[4], pf_tmp[8]) != B_SHORE) w_pq_type = W_POI_NONE;
+        } else {
             /* the POI is on a lattice point: a corner of this block */
             w_pq_ok = 1;
             i = (uint8_t)((lx < w_pq_px ? 1 : 0) | (ly < w_pq_py ? 2 : 0));
@@ -647,6 +669,13 @@ static void block_init(void)
         }
         if (spk_on) m = w_block_mask(ck_x, ck_y, spk_on);
     }
+    brm[ckslot][0] = brm[ckslot][1] = 0;
+    if (m & 0x0F) {   /* causeways: resolved per block into a cell mask */
+        uint16_t rb = w_block_roads(ck_x, ck_y, m);
+        brm[ckslot][0] = (uint8_t)rb;
+        brm[ckslot][1] = (uint8_t)(rb >> 8);
+        m &= 0xF0;
+    }
     bpm[ckslot] = m;
     /* the POI of the block's 16x16 cell */
     if ((ck_x & 0xFFF0) != w_pq_x || (ck_y & 0xFFF0) != w_pq_y) poi_roll(ck_x & 0xFFF0, ck_y & 0xFFF0);
@@ -671,11 +700,13 @@ static uint8_t cell(uint16_t mx, uint16_t my)
     cellf();
     w_salt = SALT_D;
     gd = w_hash(mx, my);
-    /* set pieces */
+    /* set pieces: beacons, the Heart, the start fire, then causeways, then the start clearing */
     if (bpm[ckslot]) {
         p = w_piece(mx, my, bpm[ckslot]);
         if (p != W_SP_NONE && p != W_SP_CLEAR) return p;
     }
+    b = (uint8_t)((((uint8_t)my & 3) << 2) | ((uint8_t)mx & 3));
+    if (brm[ckslot][b >> 3] & w_bitmask[b & 7]) return gd < 24 ? MT_RUIN_FLOOR : MT_ROAD;
     /* classify */
     b = w_classify_base(ge, gm);
     if (b >= B_SHORE && b != B_ROCK) {

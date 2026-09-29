@@ -541,7 +541,7 @@ static void request(uint8_t r)
  * must not call the world core: it reads the streamed cache only. */
 void world_frame(void) BANKED
 {
-    int16_t dx, dy;
+    int16_t rx, ry;
     dbg_count_on = 1;
     STAMP(0);
     input();
@@ -559,13 +559,15 @@ void world_frame(void) BANKED
         wake_t++;
     }
     if ((pressed & J_START) && pl_state != PL_GLIDE && pl_state != PL_SLEEP) { request(REQ_MAP); return; }
-    /* the wanderer waits (rarely) when the streamer is at the edge of its slack */
-    dx = (int16_t)((uint16_t)(cam_mx - 2) - land_x0);
-    dy = (int16_t)((uint16_t)(cam_my - 3) - land_y0);
-    if (dx > 2 || dx < -2 || dy > 3 || dy < -3) { request(REQ_REFILL); return; }
-    if (dx >= 2 || dx <= -2 || dy >= 3 || dy <= -3) dbg_stalls++;
+    /* The wanderer waits (rarely) when the streamer is at the edge of its slack. Pixel gate:
+       the view must stay off the outer half of the window's edge columns / rows, which are
+       provisional (their far neighbours are not loaded, so their water edges are not final),
+       with 2 px for this frame's move and some for the VBlank queue. */
+    rx = (int16_t)(((int16_t)(cam_mx - land_x0) << 4) + cam_sx);
+    ry = (int16_t)(((int16_t)(cam_my - land_y0) << 4) + cam_sy);
+    if (rx < 0 || rx > 88 || ry < 0 || ry > 128) { request(REQ_REFILL); return; }
+    if (rx < 10 || rx > 62 || ry < 10 || ry > 102) dbg_stalls++;
     else player_update();
-    STAMP(1);
     if (ending_req) { request(REQ_ENDING); return; }
     camera_update();
     time_tick();

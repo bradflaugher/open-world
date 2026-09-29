@@ -23,10 +23,20 @@ BANKREF_EXTERN(assets)
 #define ASSETS_BANKED 1
 
 /* ---- world BG tileset (load with set_bkg_data(0, BG_TILE_COUNT, bg_tiles)) ---- */
-#define BG_TILE_COUNT  166    /* <= 224 */
+#define BG_TILE_COUNT  198    /* <= 224 */
 extern const uint8_t bg_tiles[];              /* BG_TILE_COUNT * 16 bytes, 2bpp */
 extern const uint8_t mt_tiles[MT_COUNT][4];   /* bg tile index TL, TR, BL, BR */
 extern const uint8_t mt_attr[MT_COUNT][4];    /* CGB attribute: palette class (PAL_*), no flips */
+
+/* Autotiled water edges (engine: land.c). For a water cell each quarter picks a variant from
+   its 3 neighbours in that corner direction (TL: N, W, NW; TR: N, E, NE; BL: S, W, SW;
+   BR: S, E, SE): both sides "other" -> OUTER, the horizontal side -> H, the vertical side -> V,
+   only the diagonal -> INNER, none -> the base tile. Class SEA: MT_SEA / MT_SEA_GLINT cells,
+   "other" = anything but those two. Class SHALLOW: MT_SHALLOW cells, "other" = anything but
+   sea, glint, shallows and stepping stones. Same palette as the cell. Visual only. */
+enum { EDGE_SEA, EDGE_SHALLOW, EDGE_CLASS_COUNT };
+enum { EDGE_H, EDGE_V, EDGE_OUTER, EDGE_INNER, EDGE_VARIANT_COUNT };
+extern const uint8_t edge_tiles[EDGE_CLASS_COUNT][4][EDGE_VARIANT_COUNT];
 
 /* Animated BG tiles: every ANIM_PERIOD frames copy anim_frames[i][f] into bg tile
    anim_tile[i], f = 0..ANIM_FRAMES-1 cycling. Entries: 0=SEA, 1=GLINT, 2=FIRE_L, 3=FIRE_R, 4=BEACON_L, 5=BEACON_R, 6=HEART_L, 7=HEART_R. */

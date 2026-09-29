@@ -350,5 +350,43 @@ class TestAssets(unittest.TestCase):
         self.assertNotIn('warning', r.stdout.decode(errors='replace').lower())
 
 
+
+class TestEdges(unittest.TestCase):
+    """autotiled water edges: 2 classes x 4 corners x 4 variants of generated quarter tiles"""
+    @classmethod
+    def setUpClass(cls):
+        cls.d = G.load_assets(os.path.join(ROOT, 'assets'))
+
+    def test_table_shape_and_range(self):
+        et = self.d['edge_tiles']
+        self.assertEqual(len(et), 2)
+        flat = [t for cls in et for q in cls for t in q]
+        self.assertEqual(len(flat), 32)
+        self.assertEqual(len(set(flat)), 32, 'every edge tile is its own')
+        self.assertTrue(all(t < len(self.d['bg']) for t in flat))
+        self.assertLessEqual(len(self.d['bg']), G.MAX_BG_TILES)
+
+    def test_edges_differ_from_base_and_carry_foam(self):
+        bg, et = self.d['bg'], self.d['edge_tiles']
+        for ci, cls in enumerate(G.EDGE_CLASSES):
+            base = self.d['metas'][G.EDGE_BASE[cls]]['tiles']
+            for q in range(4):
+                for v in range(4):
+                    t = bg[et[ci][q][v]]
+                    self.assertNotEqual(t, base[q], '%s %d %d equals the base tile' % (cls, q, v))
+                    # colour 0 (light) marks the foam: it must stay sparse on land tiles
+                    n0 = sum(row.count(0) for row in t)
+                    self.assertGreater(n0, 0, '%s %d %d has no foam' % (cls, q, v))
+                    self.assertLess(n0, 32)
+
+    def test_orientation_mirrors(self):
+        """TR is TL mirrored in x (the foam hugs the east edge instead of the west)"""
+        bg, et = self.d['bg'], self.d['edge_tiles']
+        tl, tr = bg[et[0][0][1]], bg[et[0][1][1]]     # V edge: land on the west / east
+        left_pale = sum(r[0] in (0, 1) for r in tl)
+        right_pale = sum(r[7] in (0, 1) for r in tr)
+        self.assertEqual(left_pale, 8)
+        self.assertEqual(right_pale, 8)
+
 if __name__ == '__main__':
     unittest.main()

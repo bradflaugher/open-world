@@ -280,6 +280,64 @@ def band_generated():
 # loading
 # --------------------------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------------------------
+# autotiled water edges (Link's Awakening style): quarter tiles chosen from 3 neighbours
+# --------------------------------------------------------------------------------------------
+EDGE_CLASSES = ('SEA', 'SHALLOW')          # sea vs non-sea; shallows vs dry land
+EDGE_BASE = {'SEA': 'MT_SEA', 'SHALLOW': 'MT_SHALLOW'}
+EDGE_VARIANTS = ('H', 'V', 'OUTER', 'INNER')
+
+
+def edge_depth(u, v, variant):
+    """distance (px) from the shoreline into the water at pixel (u, v) of a TL-oriented quarter:
+    u = px from the vertical side (W for TL), v = px from the horizontal side (N for TL)."""
+    import math
+    pu, pv = u + 0.5, v + 0.5
+    if variant == 'H':
+        return pv
+    if variant == 'V':
+        return pu
+    if variant == 'OUTER':          # land on both sides: the water's corner is rounded
+        r = 7.0
+        if pu < r and pv < r:
+            return r - math.hypot(r - pu, r - pv)
+        return min(pu, pv)
+    r = 3.5                         # INNER: only the diagonal is land: a small rounded bite
+    return math.hypot(pu, pv) - r
+
+
+# a gentle wobble along the shoreline; period 8 in x + y, so neighbouring tiles line up
+EDGE_WOBBLE = (0.0, 0.6, 1.0, 0.6, 0.0, -0.5, -0.8, -0.5)
+
+
+def edge_tile(base, corner, variant, cls):
+    """one quarter tile: base texture with the shoreline drawn on the water side.
+    colour 0 = light (foam: it stays bright at night), 1 = pale water / wet sand."""
+    out = []
+    for y in range(8):
+        row = []
+        for x in range(8):
+            u = x if corner in (0, 2) else 7 - x
+            v = y if corner in (0, 1) else 7 - y
+            d = edge_depth(u, v, variant) - EDGE_WOBBLE[(x + y) & 7]
+            c = base[y][x]
+            if cls == 'SEA':
+                if d < 2.4:
+                    c = 1                                  # the pale shelf
+                elif d < 3.4:
+                    c = 0 if (x * 5 + y * 3) % 7 else 1    # a broken line of foam
+                elif d < 4.4 and (x + y * 3) % 4 == 0:
+                    c = 1                                  # spray
+            else:
+                if d < 1.2:
+                    c = 0 if (x * 3 + y) % 5 else 1        # lapping foam on the sand
+                elif d < 2.4 and (x * 7 + y * 5) % 3 == 0:
+                    c = 2                                  # the wet line
+            row.append(c)
+        out.append(tuple(row))
+    return tuple(out)
+
+
 def placeholder_meta(i):
     """crude fallback art (only with strict=False)"""
     p = [[1] * 16 for _ in range(16)]
@@ -447,6 +505,17 @@ def load_assets(assets_dir, strict=True):
     band_tiles = dict(band)
     band_tiles.update(dict(gen))
 
+    # autotiled water edges: [class][corner][variant] -> bg tile
+    edge_tiles = []
+    for cls in EDGE_CLASSES:
+        base = metas[EDGE_BASE[cls]]['tiles']
+        per_corner = []
+        for corner in range(4):
+            per_corner.append([add_static(edge_tile(base[corner], corner, var, cls),
+                                          'edge %s %s %s' % (cls, CORNERS[corner], var))
+                               for var in EDGE_VARIANTS])
+        edge_tiles.append(per_corner)
+
     if len(bg) > MAX_BG_TILES:
         raise AssetError('world BG tileset has %d tiles (> %d)' % (len(bg), MAX_BG_TILES))
 
@@ -532,6 +601,7 @@ def load_assets(assets_dir, strict=True):
 
     return {
         'bg': bg, 'bg_label': bg_label, 'mt_tiles': mt_tiles, 'mt_attr': mt_attr,
+        'edge_tiles': edge_tiles,
         'metas': metas, 'anim_names': anim_names, 'anims': anims, 'anim_idx': anim_idx,
         'band_idx': band_idx, 'band_tiles': band_tiles,
         'spr_tiles': spr_tiles, 'spr_idx': spr_idx, 'spr_label': spr_label, 'spr_art': spr_art,
@@ -596,6 +666,16 @@ def gen(d, banked=None):
     A('extern const uint8_t bg_tiles[];              /* BG_TILE_COUNT * 16 bytes, 2bpp */')
     A('extern const uint8_t mt_tiles[MT_COUNT][4];   /* bg tile index TL, TR, BL, BR */')
     A('extern const uint8_t mt_attr[MT_COUNT][4];    /* CGB attribute: palette class (PAL_*), no flips */')
+    A('')
+    A('/* Autotiled water edges (engine: land.c). For a water cell each quarter picks a variant from')
+    A('   its 3 neighbours in that corner direction (TL: N, W, NW; TR: N, E, NE; BL: S, W, SW;')
+    A('   BR: S, E, SE): both sides "other" -> OUTER, the horizontal side -> H, the vertical side -> V,')
+    A('   only the diagonal -> INNER, none -> the base tile. Class SEA: MT_SEA / MT_SEA_GLINT cells,')
+    A('   "other" = anything but those two. Class SHALLOW: MT_SHALLOW cells, "other" = anything but')
+    A('   sea, glint, shallows and stepping stones. Same palette as the cell. Visual only. */')
+    A('enum { EDGE_SEA, EDGE_SHALLOW, EDGE_CLASS_COUNT };')
+    A('enum { EDGE_H, EDGE_V, EDGE_OUTER, EDGE_INNER, EDGE_VARIANT_COUNT };')
+    A('extern const uint8_t edge_tiles[EDGE_CLASS_COUNT][4][EDGE_VARIANT_COUNT];')
     A('')
     A('/* Animated BG tiles: every ANIM_PERIOD frames copy anim_frames[i][f] into bg tile')
     A('   anim_tile[i], f = 0..ANIM_FRAMES-1 cycling. Entries: %s. */' %
@@ -724,6 +804,12 @@ def gen(d, banked=None):
     B('const uint8_t mt_attr[MT_COUNT][4] = {')
     for n, t in zip(MT_ORDER, d['mt_attr']):
         B('    {%d,%d,%d,%d}, /* %s */' % (tuple(t) + (n,)))
+    B('};')
+    B('')
+    B('const uint8_t edge_tiles[EDGE_CLASS_COUNT][4][EDGE_VARIANT_COUNT] = {')
+    for cls, per in zip(EDGE_CLASSES, d['edge_tiles']):
+            B('    { %s }, /* %s: TL TR BL BR x H V OUTER INNER */' %
+          (', '.join('{%s}' % ','.join('%3d' % t for t in q) for q in per), cls))
     B('};')
     B('')
     B('const uint8_t anim_tile[ANIM_COUNT] = { %s };' %

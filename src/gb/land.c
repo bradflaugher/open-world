@@ -4,7 +4,13 @@
  * The visible land spans columns cmx..cmx+10 and rows cmy..cmy+8, so the committed window
  * may lag the desired one by up to 2 columns / 3 rows before anything unloaded could show.
  * A job is one full column (or row) of 15 metatiles, generated in order (the world core's
- * noise caches slide along it) into job_buf, then committed at once: cache + VRAM queue. */
+ * noise caches slide along it) into job_buf, then committed at once: cache + VRAM queue.
+ *
+ * Autotiled water edges: each water cell's four quarters are chosen from the cache neighbours
+ * (see assets.h). A cell whose neighbour is outside the window treats it as "same" (no edge),
+ * so the outermost column / row is provisional on its far side; each commit also re-draws the
+ * water cells of the line behind it, which now has all its neighbours. The camera gate in
+ * world_frame keeps the provisional far halves of the edge lines off screen. */
 #include <gb/gb.h>
 #include <string.h>
 #include "land.h"
@@ -24,8 +30,64 @@ static uint8_t job_i;
 static uint16_t job_c;          /* world column (col jobs) or row (row jobs) being built */
 static uint8_t job_buf[15];
 static uint8_t row_t[64], row_a[64];
+uint8_t edge_t[EDGE_CLASS_COUNT * 4 * EDGE_VARIANT_COUNT];   /* RAM copy of edge_tiles */
+static uint8_t mt_grp[MT_COUNT];      /* bit0: deep sea, bit1: any water (incl. stepping stones) */
 
 #define SLOT(mx, my) ((uint8_t)((((uint8_t)(my) & 15) << 4) | ((uint8_t)(mx) & 15)))
+#define CELL8(x8, y8) land_cache[(uint8_t)((((uint8_t)(y8)) & 15) << 4) | (((uint8_t)(x8)) & 15)]
+
+void land_init(void)
+{
+    uint8_t i;
+    for (i = 0; i < MT_COUNT; i++) mt_grp[i] = 0;
+    mt_grp[MT_SEA] = mt_grp[MT_SEA_GLINT] = 3;
+    mt_grp[MT_SHALLOW] = mt_grp[MT_STEPSTONE] = 2;
+}
+
+/* the variant for one quarter from its horizontal-side, vertical-side and diagonal neighbours */
+static uint8_t pick(uint8_t a, uint8_t b, uint8_t c)
+{
+    if (a) return b ? EDGE_OUTER : EDGE_H;
+    if (b) return EDGE_V;
+    return c ? EDGE_INNER : 0xFF;
+}
+
+/* the four BG tiles of the cell at (x, y) holding metatile m */
+static void cell_tiles(uint16_t x, uint16_t y, uint8_t m, uint8_t *t)
+{
+    uint8_t cls, rx, ry, x8 = (uint8_t)x, y8 = (uint8_t)y, v;
+    uint8_t n, s, w, e, nw, ne, sw, se;
+    const uint8_t *b = &mt_t[m << 2], *et;
+    t[0] = b[0]; t[1] = b[1]; t[2] = b[2]; t[3] = b[3];
+    if (m == MT_SEA || m == MT_SEA_GLINT) cls = 1;
+    else if (m == MT_SHALLOW) cls = 2;
+    else return;
+    rx = (uint8_t)(x8 - (uint8_t)land_x0);
+    ry = (uint8_t)(y8 - (uint8_t)land_y0);
+#define OTH(dx, dy) ((uint8_t)(rx + (dx)) < 15 && (uint8_t)(ry + (dy)) < 15 && \
+                     !(mt_grp[CELL8(x8 + (dx), y8 + (dy))] & cls))
+    n = OTH(0, -1); s = OTH(0, 1); w = OTH(-1, 0); e = OTH(1, 0);
+    nw = OTH(-1, -1); ne = OTH(1, -1); sw = OTH(-1, 1); se = OTH(1, 1);
+#undef OTH
+    et = &edge_t[(uint8_t)((cls - 1) << 4)];
+    if ((v = pick(n, w, nw)) != 0xFF) t[0] = et[v];
+    if ((v = pick(n, e, ne)) != 0xFF) t[1] = et[4 + v];
+    if ((v = pick(s, w, sw)) != 0xFF) t[2] = et[8 + v];
+    if ((v = pick(s, e, se)) != 0xFF) t[3] = et[12 + v];
+}
+
+static uint8_t is_water(uint8_t m)
+{
+    return (uint8_t)(m == MT_SEA || m == MT_SEA_GLINT || m == MT_SHALLOW);
+}
+
+/* queue the cell's tiles for VBlank (it must be inside the window) */
+static void push_cell(uint16_t x, uint16_t y)
+{
+    uint8_t t[4], m = land_cache[SLOT(x, y)];
+    cell_tiles(x, y, m, t);
+    bq_push((uint8_t)(x & 15), (uint8_t)(y & 15), m, t);
+}
 
 uint8_t land_in(uint16_t mx, uint16_t my)
 {
@@ -50,12 +112,13 @@ void land_set(uint16_t mx, uint16_t my, uint8_t mt)
     }
     land_cache[SLOT(mx, my)] = mt;
     land_changed = 1;
-    bq_push((uint8_t)(mx & 15), (uint8_t)(my & 15), mt);
+    push_cell(mx, my);
 }
 
 void land_refill(uint16_t cmx, uint16_t cmy)
 {
     uint8_t i, j, m, c, *t, *a;
+    uint8_t row_q[4];
     uint16_t x, y;
     land_job = 0;
     land_changed = 1;
@@ -67,10 +130,17 @@ void land_refill(uint16_t cmx, uint16_t cmy)
         y = (uint16_t)(land_y0 + j);
         for (i = 0; i < 16; i++) {
             x = (uint16_t)(land_x0 + i);
-            m = world_mt(x, y);
-            land_cache[SLOT(x, y)] = m;
+            land_cache[SLOT(x, y)] = world_mt(x, y);
+        }
+    }
+    t = row_q;
+    for (j = 0; j < 16; j++) {
+        y = (uint16_t)(land_y0 + j);
+        for (i = 0; i < 16; i++) {
+            x = (uint16_t)(land_x0 + i);
+            m = land_cache[SLOT(x, y)];
+            cell_tiles(x, y, m, t);
             c = (uint8_t)((x & 15) << 1);
-            t = &mt_t[m << 2];
             a = &mt_a[m << 2];
             row_t[c] = t[0]; row_t[c + 1] = t[1]; row_t[c + 32] = t[2]; row_t[c + 33] = t[3];
             row_a[c] = a[0]; row_a[c + 1] = a[1]; row_a[c + 32] = a[2]; row_a[c + 33] = a[3];
@@ -99,29 +169,28 @@ static void job_start(uint8_t kind)
 
 static void job_commit(void)
 {
-    uint8_t i, m, s;
-    uint16_t v;
+    uint8_t i;
+    uint16_t v, fix;
     if (land_job <= 2) {
+        for (i = 0; i < 15; i++) land_cache[SLOT(job_c, (uint16_t)(land_y0 + i))] = job_buf[i];
+        __critical { if (land_job == 1) land_x0++; else land_x0--; }
+        fix = land_job == 1 ? (uint16_t)(job_c - 1) : (uint16_t)(job_c + 1);
         for (i = 0; i < 15; i++) {
             v = (uint16_t)(land_y0 + i);
-            m = job_buf[i];
-            s = SLOT(job_c, v);
-            land_cache[s] = m;
-            bq_push((uint8_t)(job_c & 15), (uint8_t)(v & 15), m);
+            push_cell(job_c, v);
+            if (is_water(land_cache[SLOT(fix, v)])) push_cell(fix, v);   /* now fully known */
         }
-        __critical { if (land_job == 1) land_x0++; else land_x0--; }
-        land_changed = 1;
     } else {
+        for (i = 0; i < 15; i++) land_cache[SLOT((uint16_t)(land_x0 + i), job_c)] = job_buf[i];
+        __critical { if (land_job == 3) land_y0++; else land_y0--; }
+        fix = land_job == 3 ? (uint16_t)(job_c - 1) : (uint16_t)(job_c + 1);
         for (i = 0; i < 15; i++) {
             v = (uint16_t)(land_x0 + i);
-            m = job_buf[i];
-            s = SLOT(v, job_c);
-            land_cache[s] = m;
-            bq_push((uint8_t)(v & 15), (uint8_t)(job_c & 15), m);
+            push_cell(v, job_c);
+            if (is_water(land_cache[SLOT(v, fix)])) push_cell(v, fix);
         }
-        __critical { if (land_job == 3) land_y0++; else land_y0--; }
-        land_changed = 1;
     }
+    land_changed = 1;
     land_job = 0;
 }
 

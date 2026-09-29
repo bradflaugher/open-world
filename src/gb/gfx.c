@@ -13,6 +13,7 @@
 #include "assets.h"
 #include "sound.h"
 #include "game.h"
+#include "land.h"
 
 uint8_t is_cgb;
 volatile uint8_t vbl_frames;
@@ -30,7 +31,7 @@ static volatile uint8_t frame_ready;
 static uint8_t last_vbl;
 
 /* queues (drained by isr.s) */
-uint8_t bq[64 * 4];
+uint8_t bq[64 * 8];               /* addr lo, addr hi, mt, 4 tiles, pad */
 volatile uint8_t bq_head, bq_tail;
 uint8_t bq_budget = 8;
 uint8_t vq[32 * 4];
@@ -192,7 +193,7 @@ void split_enable(uint8_t on)
 }
 
 /* ---- VRAM queues ---- */
-void bq_push(uint8_t col, uint8_t row, uint8_t mt)
+void bq_push(uint8_t col, uint8_t row, uint8_t mt, const uint8_t *t)
 {
     uint8_t h, *p;
     uint16_t a = 0x9800u + ((uint16_t)row << 6) + ((uint16_t)col << 1);
@@ -200,10 +201,14 @@ void bq_push(uint8_t col, uint8_t row, uint8_t mt)
         __critical {
             h = bq_head;
             if ((uint8_t)((h + 1) & 63) != bq_tail) {
-                p = &bq[h << 2];
+                p = &bq[(uint16_t)h << 3];
                 p[0] = (uint8_t)a;
                 p[1] = (uint8_t)(a >> 8);
                 p[2] = mt;
+                p[3] = t[0];
+                p[4] = t[1];
+                p[5] = t[2];
+                p[6] = t[3];
                 bq_head = (uint8_t)((h + 1) & 63);
                 h = 0xFF;
             }
@@ -303,11 +308,12 @@ void gfx_init(void)
     DISPLAY_OFF;
     VBK_REG = 0;
     is_cgb = (uint8_t)(_cpu == CGB_TYPE && (VBK_REG & 0xFE) == 0xFE);
-    if (is_cgb) cpu_fast();
+    if (is_cgb) { cpu_fast(); bq_budget = 12; }
     {
         ASSETS_IN();
         memcpy(mt_t, mt_tiles, sizeof mt_t);
         memcpy(mt_a, mt_attr, sizeof mt_a);
+        memcpy(edge_t, edge_tiles, EDGE_CLASS_COUNT * 4 * EDGE_VARIANT_COUNT);
         memcpy(anim_ram, anim_frames, sizeof anim_ram);
         memcpy(cgb_bg, cgb_bg_pal, sizeof cgb_bg);
         memcpy(cgb_obj, cgb_obj_pal, sizeof cgb_obj);
@@ -321,6 +327,7 @@ void gfx_init(void)
         ASSETS_OUT();
     }
     memset((void *)shadow_OAM, 0, 160);
+    land_init();
     LCDC_REG = LCDCF_OFF | LCDCF_BG8800 | LCDCF_OBJ16 | LCDCF_OBJON | LCDCF_BGON | LCDCF_WINOFF;
     SCX_REG = 0;
     SCY_REG = 0;

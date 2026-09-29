@@ -45,6 +45,33 @@ def _enum(path, first):
 MT = {k: v for k, v in _enum(WORLD_H, 'MT_SEA').items() if k != 'MT_COUNT'}
 
 
+SEA_SET = {MT['MT_SEA'], MT['MT_SEA_GLINT']}
+WET_SET = SEA_SET | {MT['MT_SHALLOW'], MT['MT_STEPSTONE']}
+
+
+def expected_tiles(grid, x, y, mt_tiles, edge_t):
+    """The engine's autotile rule (land.c cell_tiles), with every neighbour known: a water
+    cell's quarter picks H / V / OUTER / INNER from its 3 neighbours in that corner direction."""
+    m = grid[(x, y)]
+    t = list(mt_tiles[m])
+    if m in SEA_SET:
+        cls, same = 0, SEA_SET
+    elif m == MT['MT_SHALLOW']:
+        cls, same = 1, WET_SET
+    else:
+        return tuple(t)
+
+    def other(dx, dy):
+        n = grid.get(((x + dx) & 0xFFFF, (y + dy) & 0xFFFF))
+        return n is not None and n not in same
+    for q, (sx, sy) in enumerate(((-1, -1), (1, -1), (-1, 1), (1, 1))):
+        a, b, c = other(0, sy), other(sx, 0), other(sx, sy)
+        v = (2 if b else 0) if a else 1 if b else 3 if c else -1
+        if v >= 0:
+            t[q] = edge_t[cls * 16 + q * 4 + v]
+    return tuple(t)
+
+
 def owgen(*args):
     return subprocess.check_output([OWGEN] + [str(a) for a in args], text=True)
 
@@ -217,6 +244,16 @@ class Game:
                 out[(mx, my)] = inv.get(t, -1)
         return out
 
+    def ring_tiles(self, mx, my):
+        """The 4 BG tiles (TL, TR, BL, BR) VRAM shows for world cell (mx, my)."""
+        c, r = (mx & 15) * 2, (my & 15) * 2
+        a = 0x9800 + r * 32 + c
+        return (self.vram(a), self.vram(a + 1), self.vram(a + 32), self.vram(a + 33))
+
+    def edge_table(self):
+        a = self.addr('edge_t')
+        return [self.pb.memory[a + i] for i in range(32)]
+
     def _mt_tiles(self):
         a = self.addr('mt_t')
         return [[self.pb.memory[a + m * 4 + i] for i in range(4)] for m in range(len(MT))]
@@ -279,14 +316,24 @@ class Base(unittest.TestCase):
         return out
 
     def check_land(self, what):
+        """Every visible cell's four VRAM tiles equal the host generator's metatile drawn with
+        the engine's water-edge rule (neighbours from the host too)."""
         g = self.g
         g.run(6)   # let the VBlank queue drain
-        ring = g.land_ring()
         cmx, cmy = g.u16('cam_mx'), g.u16('cam_my')
-        host = host_region(self.SEED, cmx, cmy, 11, 9)
-        host.update({k: v for k, v in self.mods().items() if k in host})
-        bad = [(k, ring[k], host[k]) for k in host if ring[k] != host[k]]
-        self.assertEqual(bad, [], f'{what}: land VRAM differs from owgen at {bad[:4]}')
+        grid = host_region(self.SEED, (cmx - 1) & 0xFFFF, (cmy - 1) & 0xFFFF, 13, 11)
+        grid.update({k: v for k, v in self.mods().items() if k in grid})
+        mt_tiles, edge_t = g._mt_tiles(), g.edge_table()
+        inv = {v: k for k, v in MT.items()}
+        bad = []
+        for dy in range(9):
+            for dx in range(11):
+                x, y = (cmx + dx) & 0xFFFF, (cmy + dy) & 0xFFFF
+                exp = expected_tiles(grid, x, y, mt_tiles, edge_t)
+                got = g.ring_tiles(x, y)
+                if got != exp:
+                    bad.append(((x, y), inv[grid[(x, y)]], got, exp))
+        self.assertEqual(bad, [], f'{what}: land VRAM differs from owgen + edge rule at {bad[:3]}')
 
     def open_ground(self, center, rmin=8, rmax=30):
         """A walkable cell with walkable 4-neighbours, rmin..rmax cells from center."""

@@ -198,6 +198,38 @@ static uint8_t road_hits_block(const w_road_t *r, uint16_t kx, uint16_t ky)
     return (int16_t)(o0 + 3) >= (int16_t)a;
 }
 
+/* road cells of the 4x4 block at (kx, ky): bit (fy << 2) | fx */
+uint16_t w_block_roads(uint16_t kx, uint16_t ky, uint8_t mask) WBANKED
+{
+    uint16_t bits = 0, maj0, mn0, t;
+    uint8_t i, a, b, j, f, o;
+    const w_road_t *r;
+    for (i = 0; i < W_NUM_ROADS; i++) {
+        if (!(mask & (uint8_t)(W_SPM_ROAD0 << i))) continue;
+        r = &w_roads[i];
+        if (r->flags & W_R_YMAJOR) { maj0 = ky; mn0 = kx; } else { maj0 = kx; mn0 = ky; }
+        for (j = 0; j < 4; j++) {          /* the 4 minor coordinates of the block */
+            t = (r->flags & W_R_MINNEG) ? (uint16_t)(r->a_min - (uint16_t)(mn0 + j)) : (uint16_t)((uint16_t)(mn0 + j) - r->a_min);
+            if (t > r->dmin) continue;
+            if ((uint8_t)t == r->dmin) { a = road_x(r, r->n); b = r->dmaj; }
+            else {
+                f = (uint8_t)((uint8_t)t >> r->shift);
+                b = road_x(r, (uint8_t)(f + 1));
+                a = ((uint8_t)t & (uint8_t)((1u << r->shift) - 1)) ? b : road_x(r, f);
+            }
+            for (f = 0; f < 4; f++) {      /* the 4 major coordinates */
+                t = (r->flags & W_R_MAJNEG) ? (uint16_t)(r->a_maj - (uint16_t)(maj0 + f)) : (uint16_t)((uint16_t)(maj0 + f) - r->a_maj);
+                if (t > 255) continue;
+                o = (uint8_t)t;
+                if (o < a || o > b) continue;
+                if (r->flags & W_R_YMAJOR) bits |= (uint16_t)(1u << ((f << 2) | j));
+                else bits |= (uint16_t)(1u << ((j << 2) | f));
+            }
+        }
+    }
+    return bits;
+}
+
 uint8_t w_block_mask(uint16_t kx, uint16_t ky, uint8_t mask) WBANKED
 {
     uint8_t i, m = 0;
@@ -295,9 +327,11 @@ OCT_VALS(os)   /* strangeness, 64 grid (same keys as oc) */
 OCT_DECL(om)   /* moisture, 32 grid */
 OCT_DECL(oe)   /* elevation, 16 grid */
 
+static uint16_t mp_cx, mp_mx, mp_ex;
 void w_lattice_reset(void) WBANKED
 {
     oc_x0 = oc_x1 = om_x0 = om_x1 = oe_x0 = oe_x1 = 0xFFFF;
+    mp_cx = mp_mx = mp_ex = 0xFFFF;
 }
 
 /* inner three rounds of w_hash (shared by all salts) */
@@ -400,16 +434,85 @@ void w_lattice(uint16_t lx, uint16_t ly) WBANKED
     w_le = (uint8_t)(k + (w_hash(lx, ly) >> 3));
 }
 
-/* ---- points of interest: one hash roll per 16x16-metatile cell --------------------------- */
-/* validate a road POI: it needs shore at its centre (one lattice point) */
-void w_poi_check(void) WBANKED
+/* Fields at an 8-metatile grid point (px, py) = (mx >> 3, my >> 3), for the map. Close to
+ * w_lattice(2 px, 2 py) but interpolated vertically first, with the columns cached, so a map
+ * scanned in rows costs about one lerp per octave per sample. Not bit-exact with the terrain
+ * (rounding), which is fine for a map. Sets w_le, w_lm, w_ls. */
+static uint16_t mp_cy, mp_my, mp_ey;
+static uint8_t mp_c[4], mp_s[4], mp_m[4], mp_e[4];
+static uint8_t mc_fy, mc_l, mc_r, ms_l, ms_r, mm_fy, mm_l, mm_r, me_fy, me_l, me_r;
+
+void w_map_point(uint16_t px, uint16_t py) WBANKED
 {
-    W_OP(W_OP_POI_CHECK);
-    w_pq_ok = 1;
-    w_lattice((uint16_t)((w_pq_x + w_pq_px) >> 2), (uint16_t)((w_pq_y + w_pq_py) >> 2));
-    if (w_classify(w_le, w_lm, w_ls) != B_SHORE) w_pq_type = W_POI_NONE;
+    uint16_t kx = px >> 3, ky = py >> 3;
+    uint8_t f, c, e;
+    if (kx != mp_cx || ky != mp_cy) {
+        mp_cx = kx;
+        mp_cy = ky;
+        okx = kx;
+        oky = ky;
+        cs_fill();
+        mp_c[0] = w_la; mp_c[1] = w_lb; mp_c[2] = w_lc; mp_c[3] = w_ld;
+        mp_s[0] = w_sa; mp_s[1] = w_sb; mp_s[2] = w_sc; mp_s[3] = w_sd;
+        mc_fy = 0xFF;
+    }
+    w_ln = 4;
+    f = (uint8_t)(((uint8_t)py & 7) << 1);
+    if (f != mc_fy) {
+        mc_fy = f;
+        w_lf = f;
+        mc_l = w_lerpn(mp_c[0], mp_c[2]); mc_r = w_lerpn(mp_c[1], mp_c[3]);
+        ms_l = w_lerpn(mp_s[0], mp_s[2]); ms_r = w_lerpn(mp_s[1], mp_s[3]);
+    }
+    w_lf = (uint8_t)(((uint8_t)px & 7) << 1);
+    c = w_lerpn(mc_l, mc_r);
+    w_ls = w_lerpn(ms_l, ms_r);
+
+    kx = px >> 2;
+    ky = py >> 2;
+    if (kx != mp_mx || ky != mp_my) {
+        mp_mx = kx;
+        mp_my = ky;
+        w_salt = SALT_M;
+        mp_m[0] = w_hash(kx, ky); mp_m[1] = w_hash((uint16_t)(kx + 1), ky);
+        mp_m[2] = w_hash(kx, (uint16_t)(ky + 1)); mp_m[3] = w_hash((uint16_t)(kx + 1), (uint16_t)(ky + 1));
+        mm_fy = 0xFF;
+    }
+    w_ln = 3;
+    f = (uint8_t)(((uint8_t)py & 3) << 1);
+    if (f != mm_fy) {
+        mm_fy = f;
+        w_lf = f;
+        mm_l = w_lerpn(mp_m[0], mp_m[2]); mm_r = w_lerpn(mp_m[1], mp_m[3]);
+    }
+    w_lf = (uint8_t)(((uint8_t)px & 3) << 1);
+    w_lm = w_lerpn(mm_l, mm_r);
+
+    kx = px >> 1;
+    ky = py >> 1;
+    if (kx != mp_ex || ky != mp_ey) {
+        mp_ex = kx;
+        mp_ey = ky;
+        w_salt = SALT_E;
+        mp_e[0] = w_hash(kx, ky); mp_e[1] = w_hash((uint16_t)(kx + 1), ky);
+        mp_e[2] = w_hash(kx, (uint16_t)(ky + 1)); mp_e[3] = w_hash((uint16_t)(kx + 1), (uint16_t)(ky + 1));
+        me_fy = 0xFF;
+    }
+    w_ln = 2;
+    f = (uint8_t)(((uint8_t)py & 1) << 1);
+    if (f != me_fy) {
+        me_fy = f;
+        w_lf = f;
+        me_l = w_lerpn(mp_e[0], mp_e[2]); me_r = w_lerpn(mp_e[1], mp_e[3]);
+    }
+    w_lf = (uint8_t)(((uint8_t)px & 1) << 1);
+    e = w_lerpn(me_l, me_r);
+    c = (uint8_t)(HV(c) + QV(e) + (e >> 3));
+    w_salt = SALT_F;
+    w_le = (uint8_t)(c + (w_hash((uint16_t)(px << 1), (uint16_t)(py << 1)) >> 3));
 }
 
+/* ---- points of interest: one hash roll per 16x16-metatile cell --------------------------- */
 /* the POI's metatile at offset (ax, ay) = |cell - poi|, or 0xFF (d = detail hash) */
 uint8_t w_poi_mt(uint8_t ax, uint8_t ay, uint8_t d) WBANKED
 {

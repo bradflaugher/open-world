@@ -305,6 +305,21 @@ static void test_helpers(void)
         }
         CHECK(maxerr <= 2);
     }
+    /* the coarse map shade agrees with the real biomes most of the time */
+    {
+        static const uint8_t bshade[B_COUNT] = { 3, 0, 0, 1, 2, 0, 0, 2, 2, 1 };
+        int i, agree = 0, n = 0, x, y;
+        world_init(9);
+        for (y = -512; y < 512; y += 8)
+            for (x = -512; x < 512; x += 8) {
+                uint16_t mx = (uint16_t)(world.start.x + x), my = (uint16_t)(world.start.y + y);
+                n++;
+                if (world_map_shade(mx, my) == bshade[world_biome(mx, my)]) agree++;
+            }
+        printf("map shade agrees with the biome for %d%% of chunks\n", agree * 100 / n);
+        CHECK(agree * 100 >= n * 75);
+        (void)i;
+    }
     /* map shade covers 0..3 */
     {
         int seen[4] = { 0, 0, 0, 0 }, i;
