@@ -59,7 +59,11 @@ extern uint8_t dbg_saves;
 void game_main(void) BANKED;
 void world_enter(uint8_t fresh) BANKED;           /* load the world view around the player */
 void camera_update(void) BANKED;
-void edit_mt(uint16_t mx, uint16_t my, uint8_t mt) BANKED;  /* mod + show */
+void edit_mt(uint16_t mx, uint16_t my, uint8_t mt) BANKED;  /* show now, mod applied by the main loop */
+void edit_remove(uint16_t mx, uint16_t my) BANKED;          /* drop a mod (cairn picked up) */
+uint8_t edit_room(void) BANKED;                             /* room for another mod? */
+void world_frame(void) BANKED;                              /* one frame of play (from the VBL ISR) */
+extern volatile uint8_t save_req;                           /* main loop saves when set */
 
 void player_update(void) BANKED;
 void player_draw(void) BANKED;
@@ -74,6 +78,7 @@ void band_reset_angle(void) BANKED;
 void fx_update(void) BANKED;        /* glow, weather, HUD sprites */
 void fx_weather_roll(void) BANKED;
 void hud_update(void) BANKED;
+void fx_redraw(void) BANKED;       /* forget cached sprite state (after the OAM was cleared) */
 
 void map_screen(void) BANKED;
 void light_beacon(uint8_t i) BANKED;

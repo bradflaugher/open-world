@@ -186,7 +186,11 @@ class Game:
 
     def face(self, d):
         """Turn to face direction d ('up' ...) with a tap too short to move far."""
-        self.press(d, hold=1, after=2)
+        want = {'up': 0, 'right': 2, 'down': 4, 'left': 6}[d]
+        self.pb.button_press(d)
+        self.wait(lambda: self.u8('pl_face') == want, 30)
+        self.pb.button_release(d)
+        self.run(3)
 
     def set_time(self, t):
         self.set_u16('tod', t)
@@ -284,6 +288,18 @@ class Base(unittest.TestCase):
         bad = [(k, ring[k], host[k]) for k in host if ring[k] != host[k]]
         self.assertEqual(bad, [], f'{what}: land VRAM differs from owgen at {bad[:4]}')
 
+    def open_ground(self, center, rmin=8, rmax=30):
+        """A walkable cell with walkable 4-neighbours, rmin..rmax cells from center."""
+        cx, cy = center
+        reg = host_region(self.SEED, cx - rmax, cy - rmax, 2 * rmax + 1, 2 * rmax + 1)
+        for r in range(rmin, rmax):
+            for (x, y), m in reg.items():
+                if max(abs(x - cx), abs(y - cy)) != r or not self.walkable(m):
+                    continue
+                if all(self.walkable(reg.get((x + dx, y + dy), 0)) for dx, dy in DIRV.values()):
+                    return x, y
+        self.fail('no open ground')
+
     def stand_next_to(self, target, max_r=3):
         """Teleport onto a walkable cell 4-adjacent to target and face it. Returns the dir."""
         tx, ty = target
@@ -326,6 +342,7 @@ class RomTest(Base):
         g = self.g
         g.new_world(self.SEED)
         g.hold(['right'], 20)
+        g.run(120)      # let the band finish turning so the scroll values are stable
         if self.CGB:
             return
         for _ in range(3):
@@ -341,7 +358,7 @@ class RomTest(Base):
 
     def render_bg_lines(self, lines):
         g, m = self.g, self.g.pb.memory
-        shades = (255, 170, 85, 0)
+        shades = (255, 153, 85, 0)     # PyBoy's default DMG palette
         out = {}
         for ly in lines:
             band = ly < 24
@@ -444,16 +461,23 @@ class RomTest(Base):
         self.assertEqual(self.mods().get(w['beacon'][0]), MT['MT_BEACON_LIT'])
         g.run(40)
         g.shot('beacon_lit')
-        # a cairn on open ground, then pick it up again
-        bx, by = w['beacon'][0]
-        self.stand_next_to((bx + 2, by + 1))
-        before = g.u8('stones')
+        # a cairn on open ground (away from any fire, which refills the pouch), then pick it up
+        ox, oy = self.open_ground(w['beacon'][0], rmin=12)
+        g.teleport(ox, oy)
+        g.face('right')
+        g.set_u8('stones', 5)
         g.press('a', after=6)
-        if g.u8('cairn_n') == 1:
-            self.assertEqual(g.u8('stones'), before - 1)
-            g.press('a', after=6)
-            self.assertEqual(g.u8('cairn_n'), 0)
-            self.assertEqual(g.u8('stones'), before)
+        self.assertEqual(g.u8('cairn_n'), 1)
+        self.assertEqual(g.u8('stones'), 4)
+        c = (g.u16('cairns'), g.u16('cairns', 2))
+        self.assertEqual(self.mods().get(c), MT['MT_CAIRN'])
+        g.run(4)
+        g.shot('cairn')
+        g.press('a', after=6)
+        self.assertEqual(g.u8('cairn_n'), 0)
+        self.assertEqual(g.u8('stones'), 5)
+        self.assertNotIn(c, self.mods())
+        self.check_land('cairn picked up')
         # stepping stone on the shallows round beacon 1
         b1 = w['beacon'][1]
         reg = host_region(self.SEED, b1[0] - 7, b1[1] - 7, 15, 15)
@@ -496,7 +520,7 @@ class RomTest(Base):
                     self.assertEqual(g.u8('pl_state'), PL_GLIDE)
                     g.shot('glide')
                     g.pb.button_release('a')
-                    g.run(30)
+                    self.assertTrue(g.wait(lambda: g.u8('pl_state') != PL_GLIDE, 200))
                     self.assertEqual((g.u16('pl_mx'), g.u16('pl_my')), l)
                     glided = True
                     break
@@ -511,8 +535,8 @@ class RomTest(Base):
         w = g.world()
         g.face('up')
         g.press('a', after=10)      # light the start fire: the respawn point
-        g.hold(['down', 'b'], 60)
-        g.set_time(T_NIGHT + 100)
+        g.teleport(*self.open_ground(w['start']))
+        g.set_time(T_NIGHT + 1100)
         g.run(40)
         g.shot('night')
         g.set_u16('warmth', 3)
@@ -602,9 +626,9 @@ class RomTest(Base):
     def test_sprites_per_line_at_night_in_rain(self):
         g = self.g
         g.new_world(self.SEED)
-        g.set_time(T_NIGHT + 50)
+        g.set_time(T_NIGHT + 1100)
         g.set_u8('weather', WX_RAIN)
-        g.run(30)
+        g.run(60)
         worst = 0
         g.pb.button_press('right')
         for f in range(240):

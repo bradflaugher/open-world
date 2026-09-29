@@ -4,6 +4,7 @@
 #pragma bank 255
 #include <gb/gb.h>
 #include <gb/cgb.h>
+#include <string.h>
 #include "gfx.h"
 #include "assets.h"
 #include "sound.h"
@@ -76,20 +77,41 @@ static uint16_t lerp555(uint16_t a, uint16_t b, uint8_t t)
 
 #define FOG_COL 0x5EF7u
 
+/* colour k of 64 (0-31 BG, 32-63 OBJ) for the current phase blend, fog, band and fade */
+static uint16_t cgb_colour(uint8_t k)
+{
+    uint8_t p = (uint8_t)((k >> 2) & 7), c = (uint8_t)(k & 3);
+    uint16_t (*src)[8][4] = k < 32 ? cgb_bg : cgb_obj;
+    uint16_t v = lerp555(src[pal_phase_from][p][c], src[pal_phase_to][p][c], pal_t);
+    if (pal_fog) v = lerp555(v, FOG_COL, (uint8_t)(pal_fog + (pal_fog >> 1)));
+    if (k < 32 && p == PAL_SKY && pal_band_bright) v = lerp555(v, 0x7FFF, pal_band_bright);
+    if (pal_fade) v = lerp555(v, 0x7FFF, pal_fade);
+    return v;
+}
+
 static void cgb_compute(uint16_t (*src)[8][4], uint16_t *dst, uint8_t band_pal)
 {
-    uint8_t p, c;
-    uint16_t v;
-    for (p = 0; p < 8; p++) {
-        for (c = 0; c < 4; c++) {
-            v = lerp555(src[pal_phase_from][p][c], src[pal_phase_to][p][c], pal_t);
-            if (pal_flash) v = 0x7FFF;
-            if (pal_fog) v = lerp555(v, FOG_COL, (uint8_t)(pal_fog + (pal_fog >> 1)));
-            if (p == band_pal && pal_band_bright) v = lerp555(v, 0x7FFF, pal_band_bright);
-            if (pal_fade) v = lerp555(v, 0x7FFF, pal_fade);
-            *dst++ = v;
-        }
-    }
+    uint8_t k, base = (uint8_t)(src == cgb_bg ? 0 : 32);
+    (void)band_pal;
+    for (k = 0; k < 32; k++) dst[k] = cgb_colour((uint8_t)(base + k));
+}
+
+/* During play (from the VBL ISR) the CGB palettes are recomputed incrementally, 8 colours a
+ * frame, into a staging copy that is published whole: a full lerp is ~36k cycles. */
+static uint16_t pal_stage[64];
+static uint8_t pal_job = 0xFF;
+uint8_t pal_pending;
+
+void pal_tick(void) BANKED
+{
+    uint8_t n;
+    if (pal_job == 0xFF) return;
+    for (n = 0; n < 8 && pal_job < 64; n++, pal_job++) pal_stage[pal_job] = cgb_colour(pal_job);
+    if (pal_job < 64 || pal_req) return;
+    memcpy(pal_bg_buf, pal_stage, 64);
+    memcpy(pal_obj_buf, &pal_stage[32], 64);
+    pal_req = 3;
+    pal_job = 0xFF;
 }
 
 void pal_apply(void) BANKED
@@ -104,6 +126,11 @@ void pal_apply(void) BANKED
     nx_obp0 = o0;
     nx_obp1 = o1;
     if (is_cgb) {
+        if (hook_busy && (LCDC_REG & LCDCF_ON)) {
+            pal_job = 0;            /* restart the incremental job */
+            return;
+        }
+        pal_job = 0xFF;
         if (LCDC_REG & LCDCF_ON) while (pal_req) { __asm__("halt"); __asm__("nop"); }
         cgb_compute(cgb_bg, pal_bg_buf, PAL_SKY);
         cgb_compute(cgb_obj, pal_obj_buf, 0xFF);

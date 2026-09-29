@@ -19,6 +19,7 @@ static uint8_t mark_b[5];           /* cached bearings */
 static uint8_t mark_rr;
 static uint8_t cairn_near = 0xFF;
 uint8_t band_mark_x[5];
+static uint8_t mark_last_a, mark_last_state = 0xFF;
 
 static uint16_t brng;
 static uint8_t brnd(void)
@@ -119,6 +120,7 @@ static uint8_t face_bearing(void)
 
 void band_reset_angle(void) BANKED
 {
+    mark_last_state = 0xFF;
     band_ang = (uint16_t)face_bearing() << 8;
     mark_rr = 0;
     for (mark_rr = 0; mark_rr < 5; mark_rr++) {
@@ -171,6 +173,11 @@ void band_update(void) BANKED
     }
     if ((vbl_frames & 7) == 0 && ++mark_rr >= 5) mark_rr = 0;
 
+    /* markers move only when the band turns or a bearing / state changes */
+    i = (uint8_t)(beacons_lit | (heart_revealed << 3) | ((cairn_near != 0xFF) << 4));
+    if (a == mark_last_a && i == mark_last_state && (vbl_frames & 7) != 1) return;
+    mark_last_a = a;
+    mark_last_state = i;
     for (i = 0; i < 5; i++) {
         show = 1;
         if (i < 3) {

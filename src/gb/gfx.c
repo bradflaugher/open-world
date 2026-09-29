@@ -1,8 +1,8 @@
 /* gfx.c - OPEN WORLD bank-0 graphics: hardware setup, VBlank handler, split-screen latch,
  * VRAM queues, animated tiles, palettes (DMG shade stepping and CGB RGB lerp) and fades.
  *
- * Frame protocol (tear-free): the main loop builds OAM in oam[] and the next scroll values
- * in nx_*, then frame_commit() copies OAM into shadow_OAM (never straddling a VBlank) and sets
+ * Frame protocol (tear-free): the frame writes sprites straight into shadow OAM early in the
+ * frame (right after a VBlank) and the next scroll values in nx_*, then frame_commit() sets
  * frame_ready. The first VBlank after that DMAs the OAM (GBDK's standard handler) and our
  * handler latches the scroll, so sprites and both scroll planes always change together. */
 #include <gb/gb.h>
@@ -12,6 +12,7 @@
 #include "gfx.h"
 #include "assets.h"
 #include "sound.h"
+#include "game.h"
 
 uint8_t is_cgb;
 volatile uint8_t vbl_frames;
@@ -27,7 +28,6 @@ volatile uint8_t band_scx, land_scx, land_scy, band_bgp = 0xE4, land_bgp = 0xE4;
 volatile uint8_t obp0_v = 0xD0, obp1_v = 0xE0, scx_v, scy_v;
 static volatile uint8_t frame_ready;
 static uint8_t last_vbl;
-uint8_t oam[160];
 
 /* queues (drained by isr.s) */
 uint8_t bq[64 * 4];
@@ -41,6 +41,7 @@ uint8_t mt_a[MT_COUNT * 4];
 
 /* animated tiles */
 volatile uint8_t anim_on;
+volatile uint8_t hook_on, hook_busy;
 static uint8_t anim_ram[ANIM_COUNT][ANIM_FRAMES][16];
 static uint8_t *anim_dst[ANIM_COUNT];
 
@@ -56,6 +57,11 @@ uint16_t cgb_obj[4][8][4];
 uint16_t title_pal_r[32];
 uint16_t pal_bg_buf[32], pal_obj_buf[32];
 volatile uint8_t pal_req;            /* bit0: BG, bit1: OBJ (CGB) */
+static uint8_t flash_hw;
+static const uint16_t white_pal[32] = {
+    0x7FFF,0x7FFF,0x7FFF,0x7FFF, 0x7FFF,0x7FFF,0x7FFF,0x7FFF, 0x7FFF,0x7FFF,0x7FFF,0x7FFF, 0x7FFF,0x7FFF,0x7FFF,0x7FFF,
+    0x7FFF,0x7FFF,0x7FFF,0x7FFF, 0x7FFF,0x7FFF,0x7FFF,0x7FFF, 0x7FFF,0x7FFF,0x7FFF,0x7FFF, 0x7FFF,0x7FFF,0x7FFF,0x7FFF
+};
 
 void stat_isr(void);
 void bq_drain(void);
@@ -93,7 +99,13 @@ static void vbl_isr(void)
     if (is_cgb) {
         vbk = VBK_REG & 1;
         VBK_REG = 0;
-        if (pal_req & 1) {
+        if (pal_flash != flash_hw) {
+            /* lightning: all BG light for a frame, then the real palettes again */
+            flash_hw = pal_flash;
+            if (pal_flash) set_bkg_palette(0, 8, white_pal);
+            else pal_req |= 1;
+        } else if (pal_flash) {
+        } else if (pal_req & 1) {
             set_bkg_palette(0, 8, pal_bg_buf);
             pal_req &= 2;
         } else if (pal_req & 2) {
@@ -121,6 +133,16 @@ static void vbl_isr(void)
       l = LY_REG; l = (uint8_t)(l >= 144 ? l - 144 : l + 10);
       if (v0 != vbl_frames) l = 255;
       if (l > dbg_vbl_ly[1]) dbg_vbl_ly[1] = l; }
+    /* the game frame runs here, so a slow world_mt in the main loop never costs a frame */
+    if (hook_on) {
+        if (hook_busy) {
+            if (dbg_count_on) dbg_frame_drops++;
+        } else {
+            hook_busy = 1;
+            world_frame();
+            hook_busy = 0;
+        }
+    }
 }
 
 void frame_sync(void)
@@ -136,15 +158,6 @@ void frame_sync(void)
 
 void frame_commit(void)
 {
-    uint8_t ly = LY_REG, f;
-    if (ly >= 120 && ly < 144) {
-        /* too close to the VBlank: let it pass (the frame is late anyway) */
-        f = vbl_frames;
-        while (vbl_frames == f) { __asm__("halt"); __asm__("nop"); }
-        if (dbg_count_on) dbg_frame_drops++;
-        last_vbl = vbl_frames;
-    }
-    memcpy((void *)shadow_OAM, oam, 160);
     frame_ready = 1;
 }
 
@@ -181,14 +194,24 @@ void split_enable(uint8_t on)
 /* ---- VRAM queues ---- */
 void bq_push(uint8_t col, uint8_t row, uint8_t mt)
 {
-    uint8_t h = bq_head, *p;
+    uint8_t h, *p;
     uint16_t a = 0x9800u + ((uint16_t)row << 6) + ((uint16_t)col << 1);
-    while ((uint8_t)((h + 1) & 63) == bq_tail) { __asm__("halt"); __asm__("nop"); }
-    p = &bq[h << 2];
-    p[0] = (uint8_t)a;
-    p[1] = (uint8_t)(a >> 8);
-    p[2] = mt;
-    bq_head = (uint8_t)((h + 1) & 63);
+    for (;;) {
+        __critical {
+            h = bq_head;
+            if ((uint8_t)((h + 1) & 63) != bq_tail) {
+                p = &bq[h << 2];
+                p[0] = (uint8_t)a;
+                p[1] = (uint8_t)(a >> 8);
+                p[2] = mt;
+                bq_head = (uint8_t)((h + 1) & 63);
+                h = 0xFF;
+            }
+        }
+        if (h == 0xFF) return;
+        __asm__("halt");
+        __asm__("nop");
+    }
 }
 
 uint8_t bq_pending(void)
@@ -198,14 +221,24 @@ uint8_t bq_pending(void)
 
 void vq_push(uint16_t addr, uint8_t tile, uint8_t attr)
 {
-    uint8_t h = vq_head, *p;
-    while ((uint8_t)((h + 1) & 31) == vq_tail) { __asm__("halt"); __asm__("nop"); }
-    p = &vq[h << 2];
-    p[0] = (uint8_t)addr;
-    p[1] = (uint8_t)(addr >> 8);
-    p[2] = tile;
-    p[3] = attr;
-    vq_head = (uint8_t)((h + 1) & 31);
+    uint8_t h, *p;
+    for (;;) {
+        __critical {
+            h = vq_head;
+            if ((uint8_t)((h + 1) & 31) != vq_tail) {
+                p = &vq[h << 2];
+                p[0] = (uint8_t)addr;
+                p[1] = (uint8_t)(addr >> 8);
+                p[2] = tile;
+                p[3] = attr;
+                vq_head = (uint8_t)((h + 1) & 31);
+                h = 0xFF;
+            }
+        }
+        if (h == 0xFF) return;
+        __asm__("halt");
+        __asm__("nop");
+    }
 }
 
 uint8_t vq_pending(void)
@@ -287,7 +320,6 @@ void gfx_init(void)
         }
         ASSETS_OUT();
     }
-    memset(oam, 0, sizeof oam);
     memset((void *)shadow_OAM, 0, 160);
     LCDC_REG = LCDCF_OFF | LCDCF_BG8800 | LCDCF_OBJ16 | LCDCF_OBJON | LCDCF_BGON | LCDCF_WINOFF;
     SCX_REG = 0;

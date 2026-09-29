@@ -98,22 +98,26 @@ extern world_layout_t world;       /* filled by world_init */
  * Slow (~0.5-1 s on the Game Boy): call once per world, never per frame. */
 void    world_init(uint16_t seed) WBANKED;
 uint8_t world_mt(uint16_t mx, uint16_t my);    /* final metatile incl. mods; the hot path */
-/* generated metatile, ignoring mods: a lookup, except on a modded cell (then it rebuilds that
- * block: slow, ~20k M-cycles; banked) */
-uint8_t world_mt_base(uint16_t mx, uint16_t my) WBANKED;
+uint8_t world_mt_base(uint16_t mx, uint16_t my);/* generated metatile, ignoring mods */
 uint8_t world_biome(uint16_t mx, uint16_t my); /* biome of that cell (cheap-ish) */
 uint8_t world_map_shade(uint16_t mx, uint16_t my); /* 0..3 map shade for the map screen (fast, coarse) */
 uint8_t world_detail(uint16_t mx, uint16_t my); /* 0..255 hash for per-cell variation (tile flips, anims) */
+/* Optional: warm the caches for the 4x4 block holding (mx, my) one lattice point at a time
+ * (<= ~2500 M-cycles per call). Call it once per frame for the next column / row the scroll
+ * will need (e.g. 4-6 metatiles ahead of the streamed edge, at its first and last cell): then
+ * world_mt never computes more than one lattice point per call. Returns the corners that were
+ * still missing (0 = ready, nothing done). Never changes any result. */
+uint8_t world_prefetch(uint16_t mx, uint16_t my);
 
 /* ---- mods: persistent world edits (lit fires, cairns, stepping stones, burnt brambles...) ---- */
 #define MAX_MODS 96
 typedef struct { uint16_t x, y; uint8_t mt; } wmod_t;
 extern wmod_t  world_mods[MAX_MODS];
 extern uint8_t world_mod_count;
-/* add/replace; returns 0 if the table is full. Banked, ~3k M-cycles (linear scan): per event only */
+/* add/replace; returns 0 if the table is full. Banked: call per event, not per frame */
 uint8_t world_mod_set(uint16_t mx, uint16_t my, uint8_t mt) WBANKED;
 void    world_mods_clear(void) WBANKED;
-/* Rebuild the mods lookup filter and drop cached blocks. Call after writing world_mods[] /
+/* Rebuild the mods lookup index and drop cached blocks. Call after writing world_mods[] /
  * world_mod_count directly (e.g. after loading a save). world_mt also does it by itself when
  * world_mod_count changed, but not if entries were rewritten in place with the same count. */
 void    world_mods_rebuild(void) WBANKED;
@@ -150,8 +154,11 @@ extern uint8_t  w_road_x[W_ROAD_POOL];    /* |major - a_maj| of each breakpoint 
 extern uint8_t  w_s0, w_s1, w_salt;       /* seed bytes mixed into every hash; salt of the next */
 extern uint8_t  w_ready;                  /* set pieces valid */
 extern uint8_t  w_start_ground;
-extern uint16_t w_spx0, w_spy0;           /* coarse filter origin (64-metatile cells) */
-extern uint8_t  w_sp_bits[32];            /* 16 x 16 cells, bit set = set piece / road there */
+extern uint16_t w_spx0, w_spy0;           /* coarse filter origin (128-metatile cells) */
+extern uint8_t  w_sp_mask[64];            /* 8 x 8 cells: which set pieces touch it (W_SPM_*) */
+#define W_SPM_ROAD0  0x01                 /* bits 0-3: causeways 0-3 */
+#define W_SPM_BEACON0 0x10                /* bits 4-6: beacons 0-2 */
+#define W_SPM_OTHER  0x80                 /* heart, start */
 extern const uint8_t w_perm[256];
 extern const uint8_t w_biome_ground[B_COUNT];
 extern const uint8_t w_bitmask[8];
@@ -159,29 +166,34 @@ extern uint8_t  w_le, w_lm, w_ls;         /* w_lattice outputs */
 /* block cache (see world.c) */
 #define W_BC_N 8
 extern uint16_t w_bcx[W_BC_N], w_bcy[W_BC_N];
+extern uint8_t  w_bcv[W_BC_N][2];
 extern uint8_t  w_bcm[W_BC_N][16];
-extern uint8_t  w_mod_bloom[16], w_mods_seen, w_mods_off;
-/* the POI of the current 16x16 cell */
+/* mods index: hash chains over world_mods[] */
+#define W_MOD_BUCKETS 16
+#define W_MOD_NONE 0xFF
+#define w_mod_bucket(x, y) ((uint8_t)(((uint8_t)(x) ^ (uint8_t)((uint8_t)(y) << 2) ^ (uint8_t)((uint8_t)(y) >> 3)) & (W_MOD_BUCKETS - 1)))
+extern uint8_t  w_mod_head[W_MOD_BUCKETS], w_mod_next[MAX_MODS], w_mods_seen;
+/* the POI of the current 16x16 cell (key m & ~15; px, py are lattice-aligned: 4, 8 or 12) */
 extern uint16_t w_pq_x, w_pq_y;
 extern uint8_t  w_pq_type, w_pq_px, w_pq_py, w_pq_ok, w_pq_ground, w_pq_axis;
+extern uint8_t  w_lf, w_ln;               /* w_lerpn: fraction and its number of bits */
 
 uint8_t w_hash(uint16_t x, uint16_t y);   /* 4-round permutation hash with w_salt */
 uint8_t w_hash_s(uint16_t x, uint16_t y, uint8_t salt);
+uint8_t w_lerpn(uint8_t a, uint8_t b);    /* a + (b - a) * w_lf / 2^w_ln */
 uint8_t w_classify(uint8_t e, uint8_t m, uint8_t s);
 uint8_t w_classify_base(uint8_t e, uint8_t m);
 uint8_t w_bslot(uint16_t kx, uint16_t ky);
-uint8_t w_mod_bit(uint16_t kx, uint16_t ky);
 void    w_blocks_reset(void);
 void    w_reset(void);                    /* clear all caches (seed or layout changed) */
 /* cold helpers called (rarely) from the hot path; banked on the Game Boy */
 void    w_lattice(uint16_t lx, uint16_t ly) WBANKED;  /* fields at lattice point (mx>>2, my>>2) */
 void    w_lattice_reset(void) WBANKED;
-void    w_poi_roll(uint16_t cx, uint16_t cy) WBANKED; /* the roll for a 16x16 cell -> w_pq_* */
-void    w_poi_check(uint16_t px, uint16_t py) WBANKED; /* lazy biome check of the POI */
+void    w_poi_check(void) WBANKED;        /* validate a road POI (lattice at its centre) */
 uint8_t w_poi_mt(uint8_t ax, uint8_t ay, uint8_t d) WBANKED; /* POI tile at |offset|, or 0xFF */
-#define W_SP_NONE  0xFF                   /* w_pieces: no set piece here */
-#define W_SP_CLEAR 0xFE                   /* w_pieces: start clearing (base unless solid) */
-uint8_t w_pieces(uint16_t kx, uint16_t ky, uint8_t *out) WBANKED; /* 4x4 block overrides; 0 if none */
+#define W_SP_NONE  0xFF                   /* w_piece: no set piece here */
+#define W_SP_CLEAR 0xFE                   /* w_piece: start clearing (base unless solid) */
+uint8_t w_piece(uint16_t mx, uint16_t my, uint8_t mask) WBANKED;
 uint8_t w_ruin(uint16_t mx, uint16_t my, uint8_t d, uint8_t ground) WBANKED;
 uint8_t w_old_cairn(uint16_t mx, uint16_t my) WBANKED;
 #define W_POI_NONE 0
@@ -194,6 +206,16 @@ uint8_t w_old_cairn(uint16_t mx, uint16_t my) WBANKED;
 #define W_T_SHORE 114                     /* elevation thresholds shared with the generator */
 #endif
 
+
+#ifndef __SDCC
+/* ---- host-only operation counters (to bound the cost of a call; see tests/test_core.c) ---- */
+enum { W_OP_MT, W_OP_HIT, W_OP_CELL, W_OP_LATTICE, W_OP_HASH, W_OP_POI_ROLL, W_OP_POI_CHECK,
+       W_OP_PIECE, W_OP_RUIN, W_OP_CAIRN, W_OP_BLOCK, W_OP_MOD_FIND, W_OP_COUNT };
+extern uint32_t w_ops[W_OP_COUNT];
+#define W_OP(k) (w_ops[k]++)
+#else
+#define W_OP(k) ((void)0)
+#endif
 
 #ifndef __SDCC
 /* ---- host-only (tests / owgen): reachability over a window of metatiles (src/core/wreach.c) ---- */

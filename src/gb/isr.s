@@ -167,3 +167,38 @@ _vq_drain::
     dec b
     jr nz,.vq_loop
     ret
+
+; ---- save checksum: a += byte, b += a over cks_len bytes at cks_ptr (13 cycles/byte) ----
+    .globl _cks_ptr, _cks_len, _cks_a, _cks_b
+_cks_run::
+    ld a,(_cks_ptr)
+    ld l,a
+    ld a,(_cks_ptr+1)
+    ld h,a
+    ld a,(_cks_len)
+    ld c,a
+    ld a,(_cks_len+1)
+    ld b,a
+    ld a,(_cks_a)
+    ld d,a
+    ld a,(_cks_b)
+    ld e,a
+    ld a,b
+    or a,c
+    jr z,.cks_done
+.cks_loop:
+    ld a,(hl+)
+    add a,d
+    ld d,a
+    add a,e
+    ld e,a
+    dec bc
+    ld a,b
+    or a,c
+    jr nz,.cks_loop
+.cks_done:
+    ld a,d
+    ld (_cks_a),a
+    ld a,e
+    ld (_cks_b),a
+    ret

@@ -37,7 +37,7 @@ uint8_t land_mt(uint16_t mx, uint16_t my)
 {
     if ((uint16_t)(mx - land_x0) < 15u && (uint16_t)(my - land_y0) < 15u)
         return land_cache[SLOT(mx, my)];
-    return world_mt(mx, my);
+    return MT_SEA;     /* outside the window: treat as impassable (never call the core from ISRs) */
 }
 
 void land_set(uint16_t mx, uint16_t my, uint8_t mt)
@@ -106,7 +106,7 @@ static void job_commit(void)
             land_cache[s] = m;
             bq_push((uint8_t)(job_c & 15), (uint8_t)(v & 15), m);
         }
-        if (land_job == 1) land_x0++; else land_x0--;
+        __critical { if (land_job == 1) land_x0++; else land_x0--; }
         land_changed = 1;
     } else {
         for (i = 0; i < 15; i++) {
@@ -116,7 +116,7 @@ static void job_commit(void)
             land_cache[s] = m;
             bq_push((uint8_t)(v & 15), (uint8_t)(job_c & 15), m);
         }
-        if (land_job == 3) land_y0++; else land_y0--;
+        __critical { if (land_job == 3) land_y0++; else land_y0--; }
         land_changed = 1;
     }
     land_job = 0;
@@ -137,7 +137,7 @@ uint8_t land_update(uint16_t cmx, uint16_t cmy, uint8_t budget)
     if (adx >= 2 || ady >= 3) budget = 15;
     while (budget) {
         if (!land_job) {
-            if (!dx && !dy) return 0;
+            if (!dx && !dy) return 2;
             /* the axis further behind first (rows have more slack) */
             if (dx && (adx + 1 >= ady || !dy)) job_start(dx > 0 ? 1 : 2);
             else job_start(dy > 0 ? 3 : 4);
@@ -210,4 +210,36 @@ uint8_t land_near_act(void)
         if (m == MT_FIRE_COLD || m == MT_BEACON || m == MT_SHRINE || m == MT_HEART) return i;
     }
     return 0xFF;
+}
+
+/* Blocked moving sx (+-1) along x: which way to nudge in y to slip round a corner?
+   Only when the hitbox straddles two rows and one of them is open ahead. 0 = no way. */
+int8_t land_slide_x(int8_t sx)
+{
+    int8_t vx = (int8_t)(pl_sx + sx), vy = (int8_t)pl_sy;
+    uint8_t xe = (uint8_t)((uint8_t)pl_mx + (int8_t)((int8_t)(sx > 0 ? vx + 4 : vx - 5) >> 4));
+    uint8_t y0 = (uint8_t)((uint8_t)pl_my + (int8_t)((int8_t)(vy - 5) >> 4));
+    uint8_t y1 = (uint8_t)((uint8_t)pl_my + (int8_t)(vy >> 4));
+    uint8_t b0, b1;
+    if (y0 == y1) return 0;
+    b0 = (uint8_t)(mt_flags[CELL(xe, y0)] & MTF_SOLID);
+    b1 = (uint8_t)(mt_flags[CELL(xe, y1)] & MTF_SOLID);
+    if (b0 && !b1) return 1;
+    if (b1 && !b0) return -1;
+    return 0;
+}
+
+int8_t land_slide_y(int8_t sy)
+{
+    int8_t vx = (int8_t)pl_sx, vy = (int8_t)(pl_sy + sy);
+    uint8_t ye = (uint8_t)((uint8_t)pl_my + (int8_t)((int8_t)(sy > 0 ? vy : vy - 5) >> 4));
+    uint8_t x0 = (uint8_t)((uint8_t)pl_mx + (int8_t)((int8_t)(vx - 5) >> 4));
+    uint8_t x1 = (uint8_t)((uint8_t)pl_mx + (int8_t)((int8_t)(vx + 4) >> 4));
+    uint8_t b0, b1;
+    if (x0 == x1) return 0;
+    b0 = (uint8_t)(mt_flags[CELL(x0, ye)] & MTF_SOLID);
+    b1 = (uint8_t)(mt_flags[CELL(x1, ye)] & MTF_SOLID);
+    if (b0 && !b1) return 1;
+    if (b1 && !b0) return -1;
+    return 0;
 }

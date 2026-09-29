@@ -31,14 +31,20 @@ typedef char save_fits[(SAVE_LEN + 2 <= 0x1000) ? 1 : -1];
 uint8_t dbg_saves;
 static save_hdr_t hdr;
 
+/* checksum in isr.s (bank 0): a += byte, b += a */
+const uint8_t *cks_ptr;
+uint16_t cks_len;
+uint8_t cks_a, cks_b;
+void cks_run(void);
+
+static void cks_begin(void) { cks_a = 0x5A; cks_b = 0xA5; }
+static void cks_add(const void *p, uint16_t n) { cks_ptr = (const uint8_t *)p; cks_len = n; cks_run(); }
+
 static uint16_t cks(const uint8_t *p, uint16_t n)
 {
-    uint8_t a = 0x5A, b = 0xA5;
-    while (n--) {
-        a = (uint8_t)(a + *p++);
-        b = (uint8_t)(b + a);
-    }
-    return (uint16_t)(((uint16_t)b << 8) | a);
+    cks_begin();
+    cks_add(p, n);
+    return (uint16_t)(((uint16_t)cks_b << 8) | cks_a);
 }
 
 static uint8_t *put(uint8_t *d, const void *s, uint16_t n)
@@ -47,16 +53,13 @@ static uint8_t *put(uint8_t *d, const void *s, uint16_t n)
     return d + n;
 }
 
-static void write_copy(uint8_t *base)
+static void write_copy(uint8_t *d, uint16_t c)
 {
-    uint8_t *d = base;
-    uint16_t c;
     d = put(d, &hdr, sizeof hdr);
     d = put(d, cairns, sizeof cairns);
     d = put(d, world_old_cairns, sizeof world_old_cairns);
     d = put(d, world_mods, sizeof world_mods);
     d = put(d, visited, sizeof visited);
-    c = cks(base, (uint16_t)SAVE_LEN);
     d[0] = (uint8_t)c;
     d[1] = (uint8_t)(c >> 8);
 }
@@ -77,10 +80,16 @@ void save_write(void) BANKED
     hdr.cairn_n = cairn_n;
     hdr.old_n = world_old_cairn_count;
     hdr.mod_n = world_mod_count;
+    cks_begin();
+    cks_add(&hdr, sizeof hdr);
+    cks_add(cairns, sizeof cairns);
+    cks_add(world_old_cairns, sizeof world_old_cairns);
+    cks_add(world_mods, sizeof world_mods);
+    cks_add(visited, sizeof visited);
     ENABLE_RAM;
     SWITCH_RAM(0);
-    write_copy(SRAM_PRIMARY);
-    write_copy(SRAM_BACKUP);
+    write_copy(SRAM_PRIMARY, (uint16_t)(((uint16_t)cks_b << 8) | cks_a));
+    write_copy(SRAM_BACKUP, (uint16_t)(((uint16_t)cks_b << 8) | cks_a));
     DISABLE_RAM;
     dbg_saves++;
 }

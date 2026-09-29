@@ -16,9 +16,10 @@ extern uint8_t land_changed;           /* set on any cache change (consumers cle
 
 void land_refill(uint16_t cam_mx, uint16_t cam_my);  /* full synchronous load (LCD may be on) */
 /* stream towards the camera's window; budget = world_mt calls allowed this frame.
-   Returns 1 if the window lags so far behind that garbage could show (caller refills). */
+   Returns 1 if the window lags so far behind that garbage could show (caller refills),
+   2 if there was nothing to do. */
 uint8_t land_update(uint16_t cam_mx, uint16_t cam_my, uint8_t budget);
-uint8_t land_mt(uint16_t mx, uint16_t my);           /* cached metatile (falls back to world_mt) */
+uint8_t land_mt(uint16_t mx, uint16_t my);           /* cached metatile (MT_SEA outside the window) */
 void land_set(uint16_t mx, uint16_t my, uint8_t mt); /* show mt at (mx,my) now (no mod) */
 uint8_t land_in(uint16_t mx, uint16_t my);           /* inside the committed window */
 
@@ -26,6 +27,8 @@ uint8_t land_in(uint16_t mx, uint16_t my);           /* inside the committed win
 uint8_t land_rel(int8_t dx, int8_t dy);
 uint8_t land_box_free(int8_t ox, int8_t oy);
 uint8_t land_scan_flag(uint8_t flag, uint8_t r);
-uint8_t land_near_act(void);   /* neighbour dir (0..7) with a fire/beacon/shrine/heart, or 0xFF */
+uint8_t land_near_act(void);
+int8_t land_slide_x(int8_t sx);  /* corner nudge in y when blocked along x (0 none) */
+int8_t land_slide_y(int8_t sy);   /* neighbour dir (0..7) with a fire/beacon/shrine/heart, or 0xFF */
 
 #endif

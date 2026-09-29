@@ -39,12 +39,20 @@ uint8_t near_warm;
 uint16_t dbg_world_frames;
 uint8_t dbg_ly[10];
 uint8_t dbg_refills;
-uint16_t dbg_t[10], dbg_dmax[10], dbg_tm[8];
-static uint16_t tm0;
-#define TNOW() ((uint16_t)((uint16_t)vbl_frames * 154u + (LY_REG >= 144 ? LY_REG - 154 : LY_REG)))
-#define TM_B() tm0 = TNOW()
-#define TM_E(k) do { uint16_t _d = (uint16_t)(TNOW() - tm0); if (_d < 3000 && _d > dbg_tm[k]) dbg_tm[k] = _d; } while (0)
-#define STAMP(i) do { uint8_t _l = LY_REG; dbg_ly[i] = _l; dbg_t[i] = (uint16_t)((uint16_t)vbl_frames * 154u + (_l >= 144 ? _l - 154 : _l)); } while (0)
+uint16_t dbg_dmax[10], dbg_tm[8], dbg_tsum[8];
+static uint8_t st_l[10], st_v[10], tm_l, tm_v;
+/* cheap LY stamps: lines between two stamps, assuming less than two frames apart */
+static uint8_t lrel(void) { uint8_t l = LY_REG; return (uint8_t)(l >= 144 ? l - 144 : l + 10); }
+#define LREL(x) lrel()
+#define STAMP(i) do { st_l[i] = LREL(LY_REG); st_v[i] = vbl_frames; } while (0)
+static uint16_t st_d(uint8_t a, uint8_t b)
+{
+    uint16_t d = (uint16_t)(st_l[b] - st_l[a]);
+    if (st_v[b] != st_v[a]) d = (uint16_t)(d + 154);
+    return (uint16_t)(d & 0x3FF);
+}
+#define TM_B() do { tm_l = LREL(LY_REG); tm_v = vbl_frames; } while (0)
+#define TM_E(k) do { uint16_t _d = (uint16_t)(LREL(LY_REG) - tm_l); if (tm_v != vbl_frames) _d += 154; _d &= 0x3FF; if (_d > dbg_tm[k]) dbg_tm[k] = _d; } while (0)
 
 static uint8_t prev_keys;
 static uint16_t warm_acc;
@@ -86,10 +94,69 @@ static uint8_t rnd8(void)
 }
 
 /* ---------------------------------------------------------------- world edits */
+/* World edits requested during play (from the VBL ISR) are shown at once through the land
+ * cache, and queued; the main loop applies them to the core's mod table between world_mt calls
+ * (the core is not re-entrant), then saves if asked. */
+#define EQ_N 8
+static uint16_t eq_x[EQ_N], eq_y[EQ_N];
+static uint8_t eq_mt[EQ_N];
+static volatile uint8_t eq_head, eq_tail;
+volatile uint8_t save_req;
+#define EQ_REMOVE 0xFF
+
+static uint8_t eq_push(uint16_t mx, uint16_t my, uint8_t mt)
+{
+    uint8_t h = eq_head, n = (uint8_t)((h + 1) & (EQ_N - 1));
+    if (n == eq_tail) return 0;
+    eq_x[h] = mx; eq_y[h] = my; eq_mt[h] = mt;
+    eq_head = n;
+    return 1;
+}
+
+uint8_t edit_room(void) BANKED
+{
+    return (uint8_t)(world_mod_count + ((eq_head - eq_tail) & (EQ_N - 1)) + 1 < MAX_MODS);
+}
+
 void edit_mt(uint16_t mx, uint16_t my, uint8_t mt) BANKED
 {
-    if (!world_mod_set(mx, my, mt)) { sfx_play(SFX_NO); return; }
+    if (!edit_room() || !eq_push(mx, my, mt)) { sfx_play(SFX_NO); return; }
     land_set(mx, my, mt);
+}
+
+void edit_remove(uint16_t mx, uint16_t my) BANKED
+{
+    eq_push(mx, my, EQ_REMOVE);
+}
+
+/* main loop: apply one queued edit; returns 1 if it did something */
+static uint8_t eq_apply(void)
+{
+    uint8_t t = eq_tail, i, m;
+    uint16_t x, y;
+    if (t == eq_head) return 0;
+    x = eq_x[t]; y = eq_y[t]; m = eq_mt[t];
+    if (m == EQ_REMOVE) {
+        for (i = 0; i < world_mod_count; i++) {
+            if (world_mods[i].x == x && world_mods[i].y == y) {
+                world_mod_count--;
+                world_mods[i] = world_mods[world_mod_count];
+                world_mods_rebuild();
+                break;
+            }
+        }
+        land_set(x, y, world_mt(x, y));
+    } else {
+        world_mod_set(x, y, m);
+    }
+    eq_tail = (uint8_t)((t + 1) & (EQ_N - 1));
+    return 1;
+}
+
+static void main_flush(void)
+{
+    while (eq_apply()) ;
+    if (save_req) { save_req = 0; save_write(); }
 }
 
 void light_beacon(uint8_t i) BANKED
@@ -105,7 +172,7 @@ void light_beacon(uint8_t i) BANKED
         heart_revealed = 1;
         sfx_play(SFX_HEART);
     }
-    save_write();
+    save_req = 1;
 }
 
 /* ---------------------------------------------------------------- visited chunks */
@@ -249,7 +316,7 @@ static void warmth_tick(uint8_t tf)
     if (phase == PH_NIGHT) {
         rate = 5;
         if (biome_here == B_TUNDRA || biome_here == B_DESERT) rate = 10;
-        m = land_mt(pl_mx, pl_my);
+        m = land_rel(0, 0);
         if (mt_flags[m] & MTF_COLD) rate += 5;
         if (weather == WX_RAIN || weather == WX_STORM) rate += 3;
         if (weather == WX_SNOW) rate += 5;
@@ -273,8 +340,8 @@ static void time_tick(void)
     if (pl_state == PL_SLEEP) tf = 0;
     tod = (uint16_t)(tod + tf);
     if (tod >= DAY_FRAMES) { tod -= DAY_FRAMES; day_count++; }
-    TM_B(); phase_update(0); TM_E(0);
     tick8++;
+    if ((tick8 & 7) == 0) { TM_B(); phase_update(0); TM_E(0); }
     /* spread the occasional work over different frames */
     switch (tick8 & 31) {
     case 3: case 11: case 19: case 27: TM_B(); scan_warm(); TM_E(1); break;
@@ -347,6 +414,7 @@ void world_enter(uint8_t fresh) BANKED
     amb_biome = 0xFF;
     ambient_update();
     band_reset_angle();
+    fx_redraw();
     watchers_reset();
     scan_warm();
     visit_mark();
@@ -430,74 +498,110 @@ static void ending(void)
     wake_t = 0;
 }
 
-static void world_loop(void)
+/* ---------------------------------------------------------------- the world loop */
+enum { REQ_NONE = 0, REQ_MAP, REQ_WHITEOUT, REQ_ENDING, REQ_TELEPORT, REQ_REFILL };
+volatile uint8_t world_req;
+uint16_t dbg_stalls;
+uint8_t dbg_hook_ly;          /* frames the wanderer waited for the streamer */
+
+static void request(uint8_t r)
 {
-    uint8_t start_vbl, ly;
+    world_req = r;
+    hook_on = 0;
+}
+
+/* One frame of play. Runs from the VBlank interrupt (after the VRAM work and sound), so it
+ * must not call the world core: it reads the streamed cache only. */
+void world_frame(void) BANKED
+{
+    int16_t dx, dy;
+    dbg_count_on = 1;
+    STAMP(0);
+    input();
+    dbg_world_frames++;
+    if (dbg_teleport == 1) { dbg_teleport = 2; request(REQ_TELEPORT); return; }
+    if (pl_state == PL_SLEEP) {
+        if (wake_t < 255) wake_t++;
+        if (wake_t > 30 && (pressed & (J_A | J_B | J_UP | J_DOWN | J_LEFT | J_RIGHT | J_START))) {
+            pl_state = PL_STAND;
+            idle_t = 0;
+            pressed = 0;
+            ambient_mode(AMB_WORLD);
+        }
+    } else if (wake_t < 255) {
+        wake_t++;
+    }
+    if ((pressed & J_START) && pl_state != PL_GLIDE && pl_state != PL_SLEEP) { request(REQ_MAP); return; }
+    /* the wanderer waits (rarely) when the streamer is at the edge of its slack */
+    dx = (int16_t)((uint16_t)(cam_mx - 2) - land_x0);
+    dy = (int16_t)((uint16_t)(cam_my - 3) - land_y0);
+    if (dx > 2 || dx < -2 || dy > 3 || dy < -3) { request(REQ_REFILL); return; }
+    if (dx >= 2 || dx <= -2 || dy >= 3 || dy <= -3) dbg_stalls++;
+    else player_update();
+    STAMP(1);
+    if (ending_req) { request(REQ_ENDING); return; }
+    camera_update();
+    time_tick();
+    STAMP(2);
+    watchers_update();
+    band_update();
+    STAMP(3);
+    player_draw();
+    STAMP(4);
+    fx_update();
+    STAMP(5);
+    frame_commit();
+    STAMP(6);
+    { uint8_t k; uint16_t d;
+      for (k = 0; k < 6; k++) { d = st_d(k, (uint8_t)(k + 1)); if (d > dbg_dmax[k]) dbg_dmax[k] = d; dbg_tsum[k] += d; } }
+    if (!warmth) request(REQ_WHITEOUT);
+    { uint8_t l = LY_REG; l = (uint8_t)(l >= 144 ? l - 144 : l + 10); if (l > dbg_hook_ly) dbg_hook_ly = l; }
+}
+
+static void world_run(void)
+{
+    uint8_t r, cx0, cy0;
+    uint16_t cx, cy;
     for (;;) {
-        frame_sync();
-        STAMP(0);
-        { uint8_t k; uint16_t d;
-          for (k = 0; k < 7; k++) { d = (uint16_t)(dbg_t[k + 1] - dbg_t[k]); if (d < 3000 && d > dbg_dmax[k]) dbg_dmax[k] = d; } }
-        dbg_count_on = 1;
-        start_vbl = vbl_frames;
-        input();
-        dbg_world_frames++;
-        if (dbg_teleport) {
-            dbg_teleport = 0;
+        world_req = REQ_NONE;
+        hook_on = 1;
+        while (!world_req) {
+            if (eq_apply()) continue;
+            if (save_req) { save_req = 0; save_write(); continue; }
+            __critical { cx = cam_mx; cy = cam_my; }
+            r = land_update(cx, cy, 1);
+            if (r == 2) { __asm__("halt"); __asm__("nop"); }
+            else if (r == 1) request(REQ_REFILL);
+        }
+        while (hook_busy) { __asm__("halt"); __asm__("nop"); }
+        dbg_count_on = 0;
+        main_flush();
+        switch (world_req) {
+        case REQ_MAP:
+            map_screen();
+            break;
+        case REQ_WHITEOUT:
+            whiteout();
+            break;
+        case REQ_ENDING:
+            ending();
+            break;
+        case REQ_TELEPORT:
             player_place(dbg_tx, dbg_ty);
             pl_state = PL_STAND;
             camera_update();
             land_refill(cam_mx, cam_my);
             band_reset_angle();
             scan_warm();
-        }
-        if (pl_state == PL_SLEEP) {
-            if (wake_t < 255) wake_t++;
-            if (wake_t > 30 && (pressed & (J_A | J_B | J_UP | J_DOWN | J_LEFT | J_RIGHT | J_START))) {
-                pl_state = PL_STAND;
-                idle_t = 0;
-                pressed = 0;
-                ambient_mode(AMB_WORLD);
-            }
-        } else if (wake_t < 255) {
-            wake_t++;
-        }
-        if (pressed & J_START && pl_state != PL_GLIDE && pl_state != PL_SLEEP) {
-            map_screen();
-            continue;
-        }
-        STAMP(1);
-        player_update();
-        STAMP(2);
-        if (ending_req) { ending(); continue; }
-        camera_update();
-        time_tick();
-        STAMP(3);
-        watchers_update();
-        band_update();
-        STAMP(4);
-        player_draw();
-        fx_update();
-        STAMP(5);
-        if (!warmth) { frame_commit(); whiteout(); continue; }
-        frame_commit();
-        STAMP(6);
-        /* stream with the rest of the frame (at least 2 cells, more while time remains) */
-        if (land_update(cam_mx, cam_my, 2)) {
+            dbg_teleport = 0;
+            break;
+        case REQ_REFILL:
             dbg_refills++;
+            camera_update();
             land_refill(cam_mx, cam_my);
-        } else {
-            for (;;) {
-                if (!land_job && bq_pending() > 40) break;
-                ly = LY_REG;
-                if (vbl_frames != start_vbl || (ly >= 136 && ly < 144)) break;
-                if (land_update(cam_mx, cam_my, 1)) break;
-
-                if (!land_job && (uint16_t)((uint16_t)(cam_mx - 2) - land_x0) == 0 &&
-                    (uint16_t)((uint16_t)(cam_my - 3) - land_y0) == 0) break;
-            }
+            break;
         }
-        STAMP(7);
+        (void)cx0; (void)cy0;
     }
 }
 
@@ -634,6 +738,6 @@ void game_main(void) BANKED
         world_enter(1);
         ambient_mode(AMB_WAKE);
         wake_t = 0;
-        world_loop();
+        world_run();
     }
 }

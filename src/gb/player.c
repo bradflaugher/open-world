@@ -25,10 +25,10 @@ static uint16_t glide_mx0, glide_my0;
 static uint8_t glide_sx0, glide_sy0;
 static uint8_t burn_t;
 static uint16_t burn_x, burn_y;
-static uint16_t tgt_x, tgt_y;         /* the cell the wanderer faces */
-static uint8_t tgt_mt;
+uint16_t tgt_x, tgt_y;         /* the cell the wanderer faces */
+uint8_t tgt_mt;
 static uint16_t act_x, act_y;         /* nearby interactable (fire, beacon, shrine, heart) */
-static uint8_t act_mt;
+uint8_t act_mt;
 static uint8_t hint_bob;
 uint8_t ending_req;
 extern uint8_t dbg_ly[10];
@@ -72,16 +72,14 @@ void player_place(uint16_t mx, uint16_t my) BANKED
     pl_sy = 12;
 }
 
-/* one pixel along x (sx = +-1); slides round corners when the way is only partly blocked */
+/* one pixel along x (sx = +-1); slips round corners when only part of the way is blocked */
 static uint8_t step_x(int8_t sx, uint8_t pure)
 {
     int8_t k;
     if (box_free(sx, 0)) { foot_add(sx, 0); return 1; }
     if (!pure) return 0;
-    for (k = 1; k <= 6; k++) {
-        if (box_free(sx, (int8_t)-k) && box_free(0, -1)) { foot_add(0, -1); return 1; }
-        if (box_free(sx, k) && box_free(0, 1)) { foot_add(0, 1); return 1; }
-    }
+    k = land_slide_x(sx);
+    if (k && box_free(0, k)) { foot_add(0, k); return 1; }
     return 0;
 }
 
@@ -90,10 +88,8 @@ static uint8_t step_y(int8_t sy, uint8_t pure)
     int8_t k;
     if (box_free(0, sy)) { foot_add(0, sy); return 1; }
     if (!pure) return 0;
-    for (k = 1; k <= 6; k++) {
-        if (box_free((int8_t)-k, sy) && box_free(-1, 0)) { foot_add(-1, 0); return 1; }
-        if (box_free(k, sy) && box_free(1, 0)) { foot_add(1, 0); return 1; }
-    }
+    k = land_slide_y(sy);
+    if (k && box_free(k, 0)) { foot_add(k, 0); return 1; }
     return 0;
 }
 
@@ -199,20 +195,6 @@ static uint8_t can_act(void)
     return 0;
 }
 
-static void mod_remove(uint16_t x, uint16_t y)
-{
-    uint8_t i;
-    for (i = 0; i < world_mod_count; i++) {
-        if (world_mods[i].x == x && world_mods[i].y == y) {
-            world_mod_count--;
-            world_mods[i] = world_mods[world_mod_count];
-            world_mods_rebuild();
-            break;
-        }
-    }
-    land_set(x, y, world_mt(x, y));
-}
-
 void light_beacon(uint8_t i) BANKED;
 
 static void act(void)
@@ -230,7 +212,7 @@ static void act(void)
             respawn_y = act_y;
             sfx_play(SFX_LIGHT);
             shake = 2;
-            save_write();
+            save_req = 1;
             return;
         case MT_BEACON:
             for (i = 0; i < NUM_BEACONS; i++)
@@ -246,7 +228,7 @@ static void act(void)
                     edit_mt(act_x, act_y, MT_SHRINE_EMPTY);
                     sfx_play(SFX_ITEM);
                     item_pulse = 120;
-                    save_write();
+                    save_req = 1;
                     return;
                 }
             }
@@ -275,10 +257,10 @@ static void act(void)
             i--;
             cairn_n--;
             cairns[i] = cairns[cairn_n];
-            mod_remove(tgt_x, tgt_y);
+            edit_remove(tgt_x, tgt_y);
             if (stones < STONES_MAX) stones++;
             sfx_play(SFX_PICKUP);
-            save_write();
+            save_req = 1;
             return;
         }
         if (!stones) break;
@@ -286,18 +268,18 @@ static void act(void)
             edit_mt(tgt_x, tgt_y, MT_STEPSTONE);
             stones--;
             sfx_play(SFX_STEPSTONE);
-            save_write();
+            save_req = 1;
             return;
         }
         if (!blocked_mt(m) && m != MT_STEPSTONE && m != MT_ROAD && !under_me(tgt_x, tgt_y) &&
-            world_mod_count < MAX_MODS && cairn_n < MAX_CAIRNS) {
+            edit_room() && cairn_n < MAX_CAIRNS) {
             edit_mt(tgt_x, tgt_y, MT_CAIRN);
             cairns[cairn_n].x = tgt_x;
             cairns[cairn_n].y = tgt_y;
             cairn_n++;
             stones--;
             sfx_play(SFX_CAIRN);
-            save_write();
+            save_req = 1;
             return;
         }
         break;

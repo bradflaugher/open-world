@@ -35,6 +35,7 @@ void vram_flush(void);                    /* wait until both queues are empty */
 extern uint8_t mt_t[];                    /* RAM copies of mt_tiles / mt_attr: MT_COUNT * 4 */
 extern uint8_t mt_a[];
 extern volatile uint8_t anim_on;
+extern volatile uint8_t hook_on, hook_busy;   /* VBL runs world_frame() while hook_on */
 
 /* ---- palettes ---- */
 extern uint8_t pal_phase_from, pal_phase_to, pal_t;   /* t: 0..16 blend from -> to */
@@ -42,6 +43,7 @@ extern uint8_t pal_fog;                   /* 0..8 contrast collapse */
 extern uint8_t pal_fade;                  /* 0..16 towards white */
 extern uint8_t pal_flash;                 /* 1: lightning (all light) */
 extern uint8_t pal_band_bright;           /* 0..16 band towards white (the ending) */
+void pal_tick(void) BANKED;                /* advance an incremental CGB palette job */
 void pal_apply(void) BANKED;                     /* compute palettes into nx_* / CGB buffers */
 void pal_title(void) BANKED;                     /* CGB: title palettes */
 void pal_upload_now(void);
@@ -56,8 +58,9 @@ void hide_sprites_from(uint8_t first);
 void fade_to(uint8_t target, uint8_t speed) BANKED; /* animate pal_fade (runs frames) */
 void wait_frames(uint8_t n);
 
-/* OAM helpers: sprites are built in oam[] and copied to shadow OAM by frame_commit */
-extern uint8_t oam[160];
+/* OAM helpers: sprites are written straight into GBDK's shadow OAM (DMA'd every VBlank);
+   game frames run right after a VBlank, so a frame's writes all land before the next DMA */
+#define oam ((uint8_t *)shadow_OAM)
 void spr_set_f(uint8_t i, uint8_t x, uint8_t y, uint8_t tile, uint8_t prop);
 #define spr_set(i, x, y, t, p) do { uint8_t *_o = &oam[(uint8_t)(i) << 2]; _o[0] = (uint8_t)(y); _o[1] = (uint8_t)(x); _o[2] = (uint8_t)(t); _o[3] = (uint8_t)(p); } while (0)
 #define spr_hide(i) (oam[(uint8_t)(i) << 2] = 0)

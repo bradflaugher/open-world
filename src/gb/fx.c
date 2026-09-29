@@ -30,10 +30,15 @@ static uint8_t srand8(void)
 
 static const int8_t sway[16] = { 0, 1, 1, 2, 2, 2, 1, 1, 0, -1, -1, -2, -2, -2, -1, -1 };
 
+static uint8_t glow_last = 0xFF, glow_last_x, wx_hidden, hud_key[6];
+
 static void glow_draw(void)
 {
     uint8_t pal = is_cgb ? OPAL_GLOW : S_PALETTE;
     uint8_t x = (uint8_t)(CX + 8 + shake_x), y = (uint8_t)(CY + 16);
+    if (glow_on == glow_last && x == glow_last_x) return;
+    glow_last = glow_on;
+    glow_last_x = x;
     if (!glow_on) {
         uint8_t i;
         for (i = 0; i < 8; i++) spr_hide((uint8_t)(SP_GLOW + i));
@@ -68,9 +73,11 @@ static void weather_draw(void)
     last_cam_px = px;
     last_cam_py = py;
     if (weather != WX_RAIN && weather != WX_STORM && weather != WX_SNOW) {
-        for (i = 0; i < NUM_WX; i++) spr_hide((uint8_t)(SP_WX + i));
+        if (!wx_hidden) for (i = 0; i < NUM_WX; i++) spr_hide((uint8_t)(SP_WX + i));
+        wx_hidden = 1;
         return;
     }
+    wx_hidden = 0;
     if (weather == WX_SNOW) { tile = SPR_SNOW; fall = (uint8_t)((vbl_frames & 1) ? 1 : 0); }
     else { tile = SPR_RAIN; fall = weather == WX_STORM ? 5 : 4; }
     pal = is_cgb ? OPAL_WEATHER : S_PALETTE;
@@ -116,13 +123,8 @@ static void storm_tick(void)
 
 void hud_update(void) BANKED
 {
-    uint8_t i, full = (uint8_t)((warmth + 128) >> 8), tile, y, pal = is_cgb ? OPAL_EMBER : S_PALETTE, blink;
+    uint8_t i, full = (uint8_t)((warmth + 128) >> 8), tile, y, pal = is_cgb ? OPAL_EMBER : S_PALETTE, blink, show = 1;
     blink = (uint8_t)(phase == PH_NIGHT && full <= 1 && (vbl_frames & 32));
-    for (i = 0; i < 4; i++) {
-        tile = i < full ? SPR_PIP_FULL : SPR_PIP_EMPTY;
-        if (blink && i + 1 == full) tile = SPR_PIP_EMPTY;
-        spr_set((uint8_t)(SP_PIPS + i), (uint8_t)(8 + 4 + i * 9), 16 + 1, tile, pal);
-    }
     switch (equipped) {
     case IT_STONES: tile = SPR_ICON_STONES; break;
     case IT_CLOAK: tile = SPR_ICON_CLOAK; break;
@@ -132,14 +134,32 @@ void hud_update(void) BANKED
     if (item_pulse) {
         item_pulse--;
         y = (uint8_t)(y - ((item_pulse >> 2) & 1));
-        if ((item_pulse & 8) && item_pulse > 60) { spr_hide(SP_ICON); return; }
+        if ((item_pulse & 8) && item_pulse > 60) show = 0;
     }
-    if (equipped == IT_STONES && !stones && (vbl_frames & 32)) { spr_hide(SP_ICON); return; }
-    spr_set(SP_ICON, (uint8_t)(160 - 12 + 8), y, tile, (uint8_t)(is_cgb ? OPAL_UI : 0));
+    if (equipped == IT_STONES && !stones && (vbl_frames & 32)) show = 0;
+    /* only touch OAM when something changed */
+    if (hud_key[0] == full && hud_key[1] == blink && hud_key[2] == tile && hud_key[3] == y &&
+        hud_key[4] == show && hud_key[5] == 1) return;
+    hud_key[0] = full; hud_key[1] = blink; hud_key[2] = tile; hud_key[3] = y; hud_key[4] = show; hud_key[5] = 1;
+    for (i = 0; i < 4; i++) {
+        uint8_t t = i < full ? SPR_PIP_FULL : SPR_PIP_EMPTY;
+        if (blink && i + 1 == full) t = SPR_PIP_EMPTY;
+        spr_set((uint8_t)(SP_PIPS + i), (uint8_t)(8 + 4 + i * 9), 16 + 1, t, pal);
+    }
+    if (show) spr_set(SP_ICON, (uint8_t)(160 - 12 + 8), y, tile, (uint8_t)(is_cgb ? OPAL_UI : 0));
+    else spr_hide(SP_ICON);
+}
+
+void fx_redraw(void) BANKED
+{
+    glow_last = 0xFF;
+    wx_hidden = 0;
+    hud_key[5] = 0;
 }
 
 void fx_update(void) BANKED
 {
+    pal_tick();
     glow_draw();
     weather_draw();
     storm_tick();
