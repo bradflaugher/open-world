@@ -22,7 +22,7 @@
 #include "world.h"
 
 world_layout_t world;
-#ifndef __SDCC
+#if !defined(__SDCC) || defined(WORLD_OPCOUNT)
 uint32_t w_ops[W_OP_COUNT];
 #endif
 wmod_t  world_mods[MAX_MODS];
@@ -427,6 +427,8 @@ static uint8_t terrain(uint8_t b)
 /* ---- state shared with world_gen.c ------------------------------------------------------- */
 uint16_t w_pq_x = 0xFFFF, w_pq_y = 0xFFFF;        /* current POI cell key (m & ~15) */
 uint8_t  w_pq_type, w_pq_px, w_pq_py, w_pq_ok, w_pq_ground, w_pq_axis;
+static uint16_t pq2_x = 0xFFFF, pq2_y;            /* the previous POI cell, kept for a swap */
+static uint8_t pq2_type, pq2_px, pq2_py, pq2_ok, pq2_ground, pq2_axis;
 w_road_t w_roads[W_NUM_ROADS];
 uint8_t  w_ready;
 uint8_t  w_start_ground;
@@ -454,6 +456,7 @@ static uint8_t bck[W_BC_N];                       /* block initialised: corners,
 static uint8_t bpm[W_BC_N];                       /* set pieces touching the block (W_SPM_*) */
 static uint8_t bpn[W_BC_N];                       /* the block's POI can reach into it */
 static uint8_t brm[W_BC_N][2];                    /* causeway cells of the block (bit per cell) */
+static uint8_t cur_bck, cur_bpm, cur_bpn, *ckr;    /* the current block's bck, bpm, bpn, brm */
 static uint8_t *ckm, *ckv;                        /* current block's metatiles / valid bits */
 static uint16_t ck_x = 0xFFFF, ck_y = 0xFFFF;     /* current block */
 static uint8_t ckslot;
@@ -464,10 +467,12 @@ uint8_t w_bslot(uint16_t kx, uint16_t ky)
     return (uint8_t)(((uint8_t)((uint8_t)kx >> 2) + (uint8_t)(y << 2) + y) & (W_BC_N - 1));
 }
 
+static uint16_t bix[W_BC_N], biy[W_BC_N];
+static void binfo(uint16_t kx, uint16_t ky);
 void w_blocks_reset(void)
 {
     uint8_t i;
-    for (i = 0; i < W_BC_N; i++) w_bcx[i] = 0xFFFF;
+    for (i = 0; i < W_BC_N; i++) w_bcx[i] = 0xFFFF, bix[i] = 0xFFFF;
     ck_x = ck_y = 0xFFFF;
 }
 
@@ -481,6 +486,7 @@ void w_reset(void)
     lp_reset();
     w_lattice_reset();
     w_pq_x = w_pq_y = 0xFFFF;
+    pq2_x = 0xFFFF;
     spk_x = spk_y = 0xFFFF;
     w_blocks_reset();
 }
@@ -492,12 +498,13 @@ void w_reset(void)
  * that the region edges are far from the start), and the cache is flushed when it changes. */
 #define LP_N 64
 static uint8_t lptx[LP_N], lpty[LP_N], lpv[LP_N][3];
+static uint8_t lpok[LP_N / 8];                    /* valid bits (every tag value is possible) */
 static uint8_t lp_rx = 0xFF, lp_ry = 0xFF;
 
 static void lp_reset(void)
 {
     uint8_t i;
-    for (i = 0; i < LP_N; i++) lpty[i] = 0xFF, lptx[i] = 0xFF;
+    for (i = 0; i < LP_N / 8; i++) lpok[i] = 0;
     lp_rx = lp_ry = 0xFF;
 }
 
@@ -508,7 +515,7 @@ static uint8_t lp_get(uint16_t lx, uint16_t ly, uint8_t *d)
     tx = (uint8_t)((uint16_t)(lx + 1024) >> 11);
     ty = (uint8_t)((uint16_t)(ly + 1024) >> 11);
     if (tx != lp_rx || ty != lp_ry) {                /* another region: flush */
-        for (j = 0; j < LP_N; j++) lptx[j] = 0xFF, lpty[j] = 0xFF;
+        lp_reset();
         lp_rx = tx;
         lp_ry = ty;
     }
@@ -516,13 +523,14 @@ static uint8_t lp_get(uint16_t lx, uint16_t ly, uint8_t *d)
     tx = (uint8_t)(lx >> 3);
     ty = (uint8_t)(ly >> 3);
     v = lpv[j];
-    if (lptx[j] != tx || lpty[j] != ty) {
+    if (lptx[j] != tx || lpty[j] != ty || !(lpok[j >> 3] & w_bitmask[j & 7])) {
         w_lattice(lx, ly);
         v[0] = w_le;
         v[1] = w_lm;
         v[2] = w_ls;
         lptx[j] = tx;
         lpty[j] = ty;
+        lpok[j >> 3] |= w_bitmask[j & 7];
         r = 1;
     }
     d[0] = v[0];
@@ -536,7 +544,7 @@ static void block_init(void);
 static void corners(void)
 {
     uint16_t lx = ck_x >> 2, ly = ck_y >> 2;
-    if (bck[ckslot]) return;
+    if (cur_bck) return;
     block_init();
     lp_get(lx, ly, gcp);
     lp_get((uint16_t)(lx + 1), ly, gcp + 1);
@@ -546,16 +554,34 @@ static void corners(void)
 
 static uint8_t pf_tmp[12];
 
+/* are the 4 corners of the block at lattice (lx, ly) in the point cache? */
+static uint8_t lp_has(uint16_t lx, uint16_t ly)
+{
+    uint8_t j = (uint8_t)((((uint8_t)ly & 7) << 3) | ((uint8_t)lx & 7));
+    if ((uint8_t)((uint16_t)(lx + 1024) >> 11) != lp_rx || (uint8_t)((uint16_t)(ly + 1024) >> 11) != lp_ry) return 0;
+    return lptx[j] == (uint8_t)(lx >> 3) && lpty[j] == (uint8_t)(ly >> 3) && (lpok[j >> 3] & w_bitmask[j & 7]);
+}
+
+static uint8_t lpok_all(uint16_t lx, uint16_t ly)
+{
+    return lp_has(lx, ly) && lp_has((uint16_t)(lx + 1), ly) && lp_has(lx, (uint16_t)(ly + 1)) &&
+           lp_has((uint16_t)(lx + 1), (uint16_t)(ly + 1));
+}
+
 /* Warm the caches for the 4x4 block holding (mx, my): computes at most one missing lattice
  * corner (~1500-2500 M-cycles). Returns 1 if it computed one (call again), 0 if the block's
  * corners are all cached. Results never depend on it: it only moves work to a quiet frame. */
 uint8_t world_prefetch(uint16_t mx, uint16_t my)
 {
-    uint16_t lx = mx >> 2, ly = my >> 2;
-    uint8_t i;
+    uint16_t lx = mx >> 2, ly = my >> 2, kx = mx & 0xFFFC, ky = my & 0xFFFC;
+    uint8_t i = w_bslot(kx, ky);
+    if (bix[i] == kx && biy[i] == ky && lpok_all(lx, ly)) return 0;
     for (i = 0; i < 4; i++)
         if (lp_get((uint16_t)(lx + (i & 1)), (uint16_t)(ly + (i >> 1)), pf_tmp)) return 1;
-    return 0;
+    i = w_bslot(kx, ky);
+    if (bix[i] == kx && biy[i] == ky) return 0;
+    binfo(kx, ky);
+    return 1;
 }
 
 /* make block (kx, ky) current (corners are computed on first use) */
@@ -569,6 +595,7 @@ static void block_get(uint16_t kx, uint16_t ky)
     ckm = w_bcm[s];
     gcp = bcc[s];
     ckv = w_bcv[s];
+    ckr = brm[s];
     if (w_bcx[s] != kx || w_bcy[s] != ky) {
         W_OP(W_OP_BLOCK);
         w_bcx[s] = kx;
@@ -576,6 +603,9 @@ static void block_get(uint16_t kx, uint16_t ky)
         ckv[0] = ckv[1] = 0;
         bck[s] = 0;
     }
+    cur_bck = bck[s];
+    cur_bpm = bpm[s];
+    cur_bpn = bpn[s];
 }
 
 /* POI tile for cell (lx, ly) in its 16x16 cell (lattice-aligned POI; validated from the
@@ -618,8 +648,18 @@ static const uint8_t poi_pos[4] = { 4, 8, 8, 12 };   /* lattice-aligned, away fr
 static void poi_roll(uint16_t kx, uint16_t ky)
 {
     uint8_t h, h2;
+    uint16_t cx = kx >> 4, cy = ky >> 4, sx = w_pq_x, sy = w_pq_y;
+    /* swap with the previous cell (a column or row of blocks alternates between two cells) */
+#define PQ_SWAP(a, b) (h = a, a = b, b = h)
+    PQ_SWAP(w_pq_type, pq2_type); PQ_SWAP(w_pq_px, pq2_px); PQ_SWAP(w_pq_py, pq2_py);
+    PQ_SWAP(w_pq_ok, pq2_ok); PQ_SWAP(w_pq_ground, pq2_ground); PQ_SWAP(w_pq_axis, pq2_axis);
+#undef PQ_SWAP
+    w_pq_x = pq2_x;
+    w_pq_y = pq2_y;
+    pq2_x = sx;
+    pq2_y = sy;
+    if (w_pq_x == kx && w_pq_y == ky) return;
     W_OP(W_OP_POI_ROLL);
-    uint16_t cx = kx >> 4, cy = ky >> 4;
     w_pq_x = kx;
     w_pq_y = ky;
     w_pq_ok = 0;
@@ -652,41 +692,69 @@ static uint8_t mod_find(uint16_t mx, uint16_t my)
 }
 
 static void poi_roll(uint16_t kx, uint16_t ky);
-/* per-block data, once per block: which set pieces and whether the POI can touch it */
-static void block_init(void)
+/* Per-block data: which set pieces touch the block (bpm), its causeway cells (brm) and whether
+ * its POI can reach into it (bpn). Computed once per block into a small cache of its own, so
+ * world_prefetch can do it ahead of time (near the start, with 4 causeways around, it is the
+ * most expensive part of entering a new block). */
+static uint8_t bim[W_BC_N], bin_[W_BC_N], bir[W_BC_N][2];
+static uint8_t binfo_m, binfo_n, binfo_r0, binfo_r1;
+
+static void binfo(uint16_t kx, uint16_t ky)
 {
-    uint8_t m = 0, bx, by;
-    bck[ckslot] = 1;
-    /* set pieces: coarse mask per 128x128 cell, refined for the block by the banked test */
+    uint8_t m = 0, bx, by, s = w_bslot(kx, ky);
+    if (bix[s] == kx && biy[s] == ky) {
+        binfo_m = bim[s];
+        binfo_n = bin_[s];
+        binfo_r0 = bir[s][0];
+        binfo_r1 = bir[s][1];
+        return;
+    }
+    /* set pieces: coarse mask per 128x128 cell, refined for the block by the banked tests */
     if (w_ready) {
-        if ((ck_x & 0xFF80) != spk_x || (ck_y & 0xFF80) != spk_y) {
-            uint16_t cx = (uint16_t)(ck_x - w_spx0), cy = (uint16_t)(ck_y - w_spy0);
-            spk_x = ck_x & 0xFF80;
-            spk_y = ck_y & 0xFF80;
+        if ((kx & 0xFF80) != spk_x || (ky & 0xFF80) != spk_y) {
+            uint16_t cx = (uint16_t)(kx - w_spx0), cy = (uint16_t)(ky - w_spy0);
+            spk_x = kx & 0xFF80;
+            spk_y = ky & 0xFF80;
             spk_on = 0;
             if (cx < 1024 && cy < 1024)
                 spk_on = w_sp_mask[(uint8_t)(((uint8_t)(cy >> 7) << 3) | (uint8_t)(cx >> 7))];
         }
-        if (spk_on) m = w_block_mask(ck_x, ck_y, spk_on);
+        if (spk_on) m = w_block_mask(kx, ky, spk_on);
     }
-    brm[ckslot][0] = brm[ckslot][1] = 0;
+    binfo_r0 = binfo_r1 = 0;
     if (m & 0x0F) {   /* causeways: resolved per block into a cell mask */
-        uint16_t rb = w_block_roads(ck_x, ck_y, m);
-        brm[ckslot][0] = (uint8_t)rb;
-        brm[ckslot][1] = (uint8_t)(rb >> 8);
+        uint16_t rb = w_block_roads(kx, ky, m);
+        binfo_r0 = (uint8_t)rb;
+        binfo_r1 = (uint8_t)(rb >> 8);
         m &= 0xF0;
     }
-    bpm[ckslot] = m;
+    binfo_m = m;
     /* the POI of the block's 16x16 cell */
-    if ((ck_x & 0xFFF0) != w_pq_x || (ck_y & 0xFFF0) != w_pq_y) poi_roll(ck_x & 0xFFF0, ck_y & 0xFFF0);
+    if ((kx & 0xFFF0) != w_pq_x || (ky & 0xFFF0) != w_pq_y) poi_roll(kx & 0xFFF0, ky & 0xFFF0);
     m = 0;
-    bx = (uint8_t)ck_x & 15;
-    by = (uint8_t)ck_y & 15;
+    bx = (uint8_t)kx & 15;
+    by = (uint8_t)ky & 15;
     if (w_pq_type == W_POI_ROAD)
         m = (uint8_t)(w_pq_px - bx) < 4 || (uint8_t)(w_pq_py - by) < 4;
     else if (w_pq_type != W_POI_NONE)
         m = (uint8_t)(w_pq_px + 2 - bx) < 8 && (uint8_t)(w_pq_py + 2 - by) < 8;
-    bpn[ckslot] = m;
+    binfo_n = m;
+    bix[s] = kx;
+    biy[s] = ky;
+    bim[s] = binfo_m;
+    bin_[s] = binfo_n;
+    bir[s][0] = binfo_r0;
+    bir[s][1] = binfo_r1;
+}
+
+static void block_init(void)
+{
+    bck[ckslot] = cur_bck = 1;
+    binfo(ck_x, ck_y);
+    ckr[0] = binfo_r0;
+    ckr[1] = binfo_r1;
+    bpm[ckslot] = cur_bpm = binfo_m;
+    bpn[ckslot] = cur_bpn = binfo_n;
 }
 
 /* compute one cell of the current block (without mods) */
@@ -694,19 +762,19 @@ static uint8_t cell(uint16_t mx, uint16_t my)
 {
     uint8_t b, t, p = W_SP_NONE;
     W_OP(W_OP_CELL);
-    corners();
+    if (!cur_bck) corners();
     cfx = (uint8_t)mx & 3;
     cfy = (uint8_t)my & 3;
     cellf();
     w_salt = SALT_D;
     gd = w_hash(mx, my);
     /* set pieces: beacons, the Heart, the start fire, then causeways, then the start clearing */
-    if (bpm[ckslot]) {
-        p = w_piece(mx, my, bpm[ckslot]);
+    if (cur_bpm) {
+        p = w_piece(mx, my, cur_bpm);
         if (p != W_SP_NONE && p != W_SP_CLEAR) return p;
     }
-    b = (uint8_t)((((uint8_t)my & 3) << 2) | ((uint8_t)mx & 3));
-    if (brm[ckslot][b >> 3] & w_bitmask[b & 7]) return gd < 24 ? MT_RUIN_FLOOR : MT_ROAD;
+    b = (uint8_t)((cfy << 2) | cfx);
+    if (ckr[b >> 3] & w_bitmask[b & 7]) return gd < 24 ? MT_RUIN_FLOOR : MT_ROAD;
     /* classify */
     b = w_classify_base(ge, gm);
     if (b >= B_SHORE && b != B_ROCK) {
@@ -715,7 +783,7 @@ static uint8_t cell(uint16_t mx, uint16_t my)
     }
     /* the POI of this 16x16 cell */
     t = 0xFF;
-    if (bpn[ckslot]) {
+    if (cur_bpn) {
         if ((mx & 0xFFF0) != w_pq_x || (my & 0xFFF0) != w_pq_y) poi_roll(mx & 0xFFF0, my & 0xFFF0);
         if (w_pq_type != W_POI_NONE) t = poi_cell((uint8_t)mx & 15, (uint8_t)my & 15, b);
     }

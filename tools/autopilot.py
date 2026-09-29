@@ -65,7 +65,8 @@ FACE_OF = {d: i for i, d in enumerate(DIRS)}
 
 
 def mt_enum():
-    src = open(os.path.join(ROOT, 'src', 'core', 'world.h')).read()
+    with open(os.path.join(ROOT, 'src', 'core', 'world.h')) as f:
+        src = f.read()
     i = src.index('MT_SEA')
     body = src[src.rindex('{', 0, i) + 1:src.index('}', i)]
     body = re.sub(r'/\*.*?\*/', '', body, flags=re.S)
@@ -103,6 +104,30 @@ class Terrain:
         self.cur = bytearray(self.base)
         self.mods = {}
         self.flags = flags
+        # explore mode: the pilot only knows what it has seen; unknown cells look like grass
+        self.explore = False
+        self.known = bytearray(w * h)
+        self.view = bytearray([MT['MT_GRASS']]) * (w * h)
+
+    def arr(self):
+        return self.view if self.explore else self.cur
+
+    def mark(self, x0, y0, w, h):
+        """Cells seen on screen: now known. Returns the newly known indices."""
+        new = []
+        for y in range(y0, y0 + h):
+            yy = y - self.y0
+            if not 0 <= yy < self.h:
+                continue
+            for x in range(x0, x0 + w):
+                xx = x - self.x0
+                if 0 <= xx < self.w:
+                    i = yy * self.w + xx
+                    if not self.known[i]:
+                        self.known[i] = 1
+                        self.view[i] = self.cur[i]
+                        new.append(i)
+        return new
 
     def idx(self, x, y):
         x -= self.x0
@@ -116,18 +141,22 @@ class Terrain:
 
     def mt(self, x, y):
         i = self.idx(x, y)
-        return self.cur[i] if i >= 0 else MT['MT_SEA']
+        return self.arr()[i] if i >= 0 else MT['MT_SEA']
 
     def set_mods(self, mods):
         for (x, y) in self.mods:
             i = self.idx(x, y)
             if i >= 0:
                 self.cur[i] = self.base[i]
+                if self.known[i]:
+                    self.view[i] = self.base[i]
         self.mods = dict(mods)
         for (x, y), m in mods.items():
             i = self.idx(x, y)
             if i >= 0:
                 self.cur[i] = m
+                self.known[i] = 1
+                self.view[i] = m
 
     def solid(self, x, y):
         return self.flags[self.mt(x, y)] & MTF_SOLID
@@ -144,11 +173,12 @@ def plan(ter, start, goals, items, stones=12, avoid=None, limit=None, heuristic=
     kind is how the cell is entered: 'walk', 'burn' (a bramble, from the previous cell),
     'stone' (shallows) or 'glide' (3 cells in one direction). None if unreachable."""
     W, H = ter.w, ter.h
-    cur, fl = ter.cur, ter.flags
+    cur, fl = ter.arr(), ter.flags
     lantern = items & (1 << IT_LANTERN)
     has_stones = (items & (1 << IT_STONES)) and stones > 0
     cloak = items & (1 << IT_CLOAK)
-    BR, SH = MT['MT_BRAMBLE'], MT['MT_SHALLOW']
+    BR, SH, ROAD = MT['MT_BRAMBLE'], MT['MT_SHALLOW'], MT['MT_ROAD']
+    road_bias = ter.explore
     s = ter.idx(*start)
     gidx = {ter.idx(*g) for g in goals} - {-1}
     if s < 0 or not gidx:
@@ -212,10 +242,12 @@ def plan(ter, start, goals, items, stones=12, avoid=None, limit=None, heuristic=
                     c = COST_DIAG if diag else COST_ORTH
                     if slow:
                         c *= 2
+                    if m == ROAD and road_bias:
+                        c -= 2          # a first-time player follows the causeway
             elif not diag and m == BR and lantern:
                 kind, c = 'burn', COST_ORTH + COST_BURN
             elif not diag and m == SH and has_stones:
-                kind, c = 'stone', COST_ORTH + COST_STONE + STONE_PENALTY
+                kind, c = 'stone', COST_ORTH + COST_STONE + STONE_PENALTY * (3 if ter.explore else 1)
             if kind:
                 c += avoid.get(j, 0)
                 ng = gc + c
@@ -259,7 +291,7 @@ def dist_field(ter, sources, items):
     """Dijkstra (walking only, with the lantern's and stones' shortcuts ignored) from the
     source cells; returns {idx: frames}."""
     W, H = ter.w, ter.h
-    cur, fl = ter.cur, ter.flags
+    cur, fl = ter.arr(), ter.flags
     dist = {}
     q = []
     for (x, y) in sources:
@@ -292,11 +324,13 @@ def dist_field(ter, sources, items):
 # --------------------------------------------------------------------------------- the pilot
 class Pilot:
     def __init__(self, rom, sym, owgen, seed, cgb, out, sram=None, max_frames=500000, log=print,
-                 shots=True, seed_mode='poke'):
+                 shots=True, seed_mode='poke', explore=False, walk=False, tag=''):
         from pyboy import PyBoy
         self.rom, self.sym, self.owgen = rom, sym, owgen
         self.seed, self.cgb = seed, cgb
-        self.tag = f"{'cgb' if cgb else 'dmg'}_{seed:04x}"
+        self.explore = explore
+        self.run_ok = not walk
+        self.tag = f"{'cgb' if cgb else 'dmg'}_{seed:04x}" + ('_explore' if explore else '') + ('_walk' if walk else '') + tag
         self.out = os.path.join(out, self.tag)
         self.shots = shots
         os.makedirs(self.out, exist_ok=True)
@@ -330,6 +364,9 @@ class Pilot:
         self.flags = None
         self.last_rest_frame = -99999
         self.stuck_block = set()
+        self.hooks = {}
+        self.trace = []
+        self.stall_stats = {} if self.has('dbg_stalls') else None
         self.avoid_watch = None
 
     # ---- memory
@@ -417,8 +454,66 @@ class Pilot:
                 self.save_shot(f'{self.frame_n // SHOT_EVERY * 30 // 60:03d}m{self.frame_n // SHOT_EVERY * 30 % 60:02d}s', periodic=True)
             if self.frame_n % 600 == 0:
                 self.sample()
+            if self.check_hitbox:
+                self.hitbox_check()
             if self.frame_n > self.max_frames:
                 raise RuntimeError(f'frame budget exhausted ({self.max_frames})')
+
+    check_hitbox = True
+    hitbox_bad = 0
+    torn_reads = 0
+    hole_pending = None
+
+    def hitbox_check(self):
+        """The wanderer's hitbox ([-5, 4] x [-5, 0] round the foot) must never overlap a solid
+        cell of the ROM's own land cache while walking; and the land cache must agree with the
+        host generator + mods under the wanderer (streaming desync)."""
+        m = self.mem
+        if m[self.addr('game_state')] != GS_WORLD or m[self.addr('pl_state')] not in (PL_STAND, PL_WALK, PL_SIT):
+            return
+        mx, my = self.u16('pl_mx'), self.u16('pl_my')
+        sx, sy = m[self.addr('pl_sx')], m[self.addr('pl_sy')]
+        self.trace.append((self.frame_n, mx, my, sx, sy, '+'.join(sorted(self.held))))
+        if len(self.trace) > 12:
+            self.trace.pop(0)
+        cells = {(mx + ((sx - 5) >> 4), my + ((sy - 5) >> 4)), (mx + ((sx + 4) >> 4), my + ((sy - 5) >> 4)),
+                 (mx + ((sx - 5) >> 4), my + (sy >> 4)), (mx + ((sx + 4) >> 4), my + (sy >> 4))}
+        if self.hole_pending:
+            # a position read torn by a late VBlank ISR (pl_mx updated, pl_sx not yet) jumps by
+            # ~16 px and comes back the next frame: only report holes that are really there
+            f0, (px, py), info = self.hole_pending
+            self.hole_pending = None
+            fx, fy = mx * 16 + sx, my * 16 + sy
+            pv = self.trace[-3] if len(self.trace) >= 3 else None
+            if pv and abs(fx - (pv[1] * 16 + pv[3])) <= 4 and abs(fy - (pv[2] * 16 + pv[4])) <= 4 and \
+                    (abs(px - fx) > 6 or abs(py - fy) > 6):
+                self.torn_reads += 1
+                if self.torn_reads <= 5:
+                    self.event('torn_read', at=f0, read=info['foot'], next=(mx, my, sx, sy))
+            else:
+                self.hitbox_bad += 1
+                if self.hitbox_bad <= 5:
+                    self.event('collision_hole', **info)
+                    self.milestone('collision_hole')
+        for c in cells:
+            v = self.land(*c)
+            if v is not None and self.flags[v] & MTF_SOLID:
+                if not self.hole_pending:
+                    self.hole_pending = (self.frame_n, (mx * 16 + sx, my * 16 + sy), dict(
+                        cell=c, mt=v, foot=(mx, my, sx, sy), state=m[self.addr('pl_state')], trace=list(self.trace),
+                        around=[[self.land(c[0] + i, c[1] + j) for i in (-1, 0, 1, 2)] for j in (-1, 0, 1, 2)]))
+                return
+        return
+        for c in cells:
+            v = self.land(*c)
+            if v is not None and self.flags[v] & MTF_SOLID:
+                self.hitbox_bad += 1
+                if self.hitbox_bad <= 5:
+                    self.event('collision_hole', cell=c, mt=v, foot=(mx, my, sx, sy), state=m[self.addr('pl_state')],
+                               trace=list(self.trace),
+                               around=[[self.land(c[0] + i, c[1] + j) for i in (-1, 0, 1, 2)] for j in (-1, 0, 1, 2)])
+                    self.milestone('collision_hole')
+                return
 
     def milestone(self, label):
         """Render one frame and keep it as a milestone screenshot."""
@@ -483,6 +578,7 @@ class Pilot:
         m = 56
         x0, y0 = min(xs) - m, min(ys) - m
         self.ter = Terrain(self.owgen, w['seed'], x0, y0, max(xs) + m - x0, max(ys) + m - y0, self.flags)
+        self.ter.explore = self.explore
         self.ter.set_mods(self.mods())
         self.log(f'terrain {self.ter.w}x{self.ter.h} at ({x0},{y0})')
 
@@ -495,8 +591,9 @@ class Pilot:
             for i in range(15):
                 x, y = x0 + i, y0 + j
                 r = self.land(x, y)
-                h = self.ter.mt(x, y)
-                if r != h and self.ter.idx(x, y) >= 0:
+                i = self.ter.idx(x, y)
+                h = self.ter.cur[i] if i >= 0 else None
+                if r != h and i >= 0:
                     bad.append((x, y, r, h))
         if bad:
             self.event('land_mismatch', where=what, n=len(bad), first=bad[:3])
@@ -565,7 +662,7 @@ class Pilot:
 
     def fire_sources(self):
         F = {MT['MT_FIRE_COLD'], MT['MT_FIRE_LIT'], MT['MT_BEACON_LIT']}
-        cur, ter = self.ter.cur, self.ter
+        cur, ter = self.ter.arr(), self.ter
         out = []
         for i, m in enumerate(cur):
             if m in F:
@@ -739,6 +836,8 @@ class Pilot:
         """Drive the foot to pixel (tx, ty) within tol. Raises Stuck / Interrupt."""
         last = self.foot()
         still = 0
+        limit = max(limit, 3 * (abs(tx - last[0]) + abs(ty - last[1])))
+        self._stall_seen = self.u16('dbg_stalls') if self.stall_stats is not None else 0
         for _ in range(limit):
             fx, fy = self.foot()
             ex, ey = tx - fx, ty - fy
@@ -756,23 +855,78 @@ class Pilot:
             if not keys:
                 # inside +-1 but outside tol 0: nudge the larger axis
                 keys.add(('right' if ex > 0 else 'left') if abs(ex) >= abs(ey) else ('down' if ey > 0 else 'up'))
-            if run and max(abs(ex), abs(ey)) > 5:
+            if run and self.run_ok and max(abs(ex), abs(ey)) > 5:
                 keys.add('b')
+            if still > 3 and len(keys - {'b'}) == 2:
+                # diagonal blocked on one side: go one axis at a time (as a player would)
+                ax = [k for k in keys if k in ('left', 'right')]
+                ay = [k for k in keys if k in ('up', 'down')]
+                keys = set((ax if (still // 4) % 2 else ay) + (['b'] if 'b' in keys else []))
             self.buttons(keys)
+            st0 = self.u16('dbg_stalls') if self.stall_stats is not None else 0
             self.tick()
+            if self.stall_stats is not None:
+                k = '+'.join(sorted(keys))
+                a = self.stall_stats.setdefault(k, [0, 0])
+                a[0] += 1
+                a[1] += (self.u16('dbg_stalls') - st0) & 0xFFFF
+            if self.ter.explore and self.frame_n % 4 == 0:
+                self.observe()
             if watch:
                 self.guard(allow_night)
             elif self.state() != GS_WORLD or self.u8('pl_state') == PL_SLEEP:
                 raise Interrupt('whiteout')
             p = self.foot()
-            if p == last:
+            if p == last and self.stall_stats is not None and self.u16('dbg_stalls') != self._stall_seen:
+                self._stall_seen = self.u16('dbg_stalls')      # frozen by the streamer, not by a wall
+            elif p == last:
                 still += 1
-                if still > 20:
+                if still > 24:
                     raise Stuck((fx, fy, ex, ey))
             else:
                 still = 0
                 last = p
         raise Stuck(('limit', self.foot(), tx, ty))
+
+    def observe(self):
+        """Explore mode: learn the cells on screen; replan if they break the current path."""
+        cx, cy = self.u16('cam_mx'), self.u16('cam_my')
+        new = self.ter.mark(cx, cy, 11, 9)
+        if not new or not self.path_cur:
+            return
+        new = set(new)
+        ter, fl = self.ter, self.flags
+        path, i0 = self.path_cur, self.path_i
+        prev = self.cell() if i0 == 0 else path[i0 - 1][:2]
+        for (x, y, kind) in path[i0:]:
+            cells = [(x, y)]
+            dx, dy = x - prev[0], y - prev[1]
+            if kind == 'glide':
+                sx, sy = (dx > 0) - (dx < 0), (dy > 0) - (dy < 0)
+                cells += [(prev[0] + sx, prev[1] + sy), (prev[0] + 2 * sx, prev[1] + 2 * sy)]
+            elif dx and dy:
+                cells += [(prev[0] + dx, prev[1]), (prev[0], prev[1] + dy)]
+            if any(ter.idx(*c) in new for c in cells):
+                m = ter.mt(x, y)
+                bad = False
+                if kind == 'walk':
+                    bad = any(fl[ter.mt(*c)] & MTF_SOLID for c in cells)
+                elif kind == 'burn':
+                    bad = m != MT['MT_BRAMBLE']
+                elif kind == 'stone':
+                    bad = m != MT['MT_SHALLOW']
+                else:
+                    bad = bool(fl[m] & MTF_SOLID) or any(
+                        not (fl[ter.mt(*c)] & MTF_GLIDE) and fl[ter.mt(*c)] & MTF_SOLID for c in cells[1:])
+                if bad:
+                    raise Interrupt('replan')
+            prev = (x, y)
+
+    def observe_all(self):
+        self.ter.mark(self.u16('cam_mx'), self.u16('cam_my'), 11, 9)
+
+    path_cur = None
+    path_i = 0
 
     @staticmethod
     def center(x, y):
@@ -815,7 +969,9 @@ class Pilot:
         (burn, stone, glide) are done from the centre of the cell before them."""
         i = 0
         n = len(path)
+        self.path_cur = path
         while i < n:
+            self.path_i = i
             x, y, kind = path[i]
             if kind == 'walk':
                 # extend the straight run
@@ -885,6 +1041,8 @@ class Pilot:
                     self.leg['refused'] += 1
                     self.event('glide_refused', frm=(cx, cy), to=(x, y), face=self.u8('pl_face'))
                     raise Interrupt('glide refused')
+                if self.hooks.get('glide_mid'):
+                    self.hooks['glide_mid'](self)
                 if self.leg['glides'] == 0:
                     self.tick(12)
                     self.milestone('glide')
@@ -900,10 +1058,13 @@ class Pilot:
                 continue
             raise ValueError(kind)
 
-    def goto(self, goals, interact=None, allow_night=True, tries=40):
+    def goto(self, goals, interact=None, allow_night=True, tries=60, budget=90000):
         """Walk until the foot's cell is in goals (replanning as needed)."""
         goals = set(goals)
-        for attempt in range(tries):
+        f0 = self.frame_n
+        attempt = fails = 0
+        while fails < tries and self.frame_n - f0 < budget:
+            attempt += 1
             self.ter.set_mods(self.mods())
             here = self.cell()
             if here in goals:
@@ -920,8 +1081,20 @@ class Pilot:
                 i = self.ter.idx(sx, sy)
                 if i >= 0:
                     avoid[i] = avoid.get(i, 0) + 300
+            if self.ter.explore:
+                self.observe_all()
             p = plan(self.ter, here, goals, self.u8('items'), self.u8('stones'), avoid=avoid)
+            if p is None and self.u8('items') & (1 << IT_STONES) and self.u8('stones') < 12 and not self.refilling:
+                self.event('refill_trip', stones=self.u8('stones'))
+                self.refilling = True
+                try:
+                    self.refill()
+                finally:
+                    self.refilling = False
+                fails += 1
+                continue
             if p is None:
+                fails += 1
                 self.event('no_path', frm=here, goals=sorted(goals)[:4], items=self.u8('items'))
                 # nudge and retry (e.g. standing on a cell the plan thinks is solid)
                 self.buttons(())
@@ -937,14 +1110,18 @@ class Pilot:
                     self.handle_whiteout()
                 elif e.why == 'night':
                     self.rest()
+                elif e.why == 'replan':
+                    self.leg['explore_replans'] = self.leg.get('explore_replans', 0) + 1
                 elif e.why == 'watcher':
                     w = self.watch()
                     if w is not None and abs(w[0]) < 40 and abs(w[1]) < 40:
                         self.evade(w)
                 else:
+                    fails += 1
                     self.event('interrupt', why=e.why, cell=self.cell())
                 continue
             except Stuck as e:
+                fails += 1
                 self.leg['stuck'] += 1
                 c = self.cell()
                 self.stuck_spots.append((self.frame_n, c, self.foot(), str(e.args[0])))
@@ -956,7 +1133,35 @@ class Pilot:
             if self.cell() in goals:
                 self.buttons(())
                 return True
-        raise RuntimeError(f'goto {sorted(goals)[:3]} failed after {tries} attempts')
+        raise RuntimeError(f'goto {sorted(goals)[:3]} failed ({fails} failures, {self.frame_n - f0} frames)')
+
+    refilling = False
+
+    def refill(self):
+        """Out of stones: walk back to the nearest fire we know, where the pouch refills."""
+        here = self.cell()
+        best = None
+        for (x, y) in self.fire_sources():
+            ring = {(x + dx, y + dy) for dx in range(-2, 3) for dy in range(-2, 3)
+                    if not self.ter.solid(x + dx, y + dy)}
+            p = plan(self.ter, here, ring, self.u8('items'), 0, limit=20000)
+            if p is not None and (best is None or len(p) < best[0]):
+                best = (len(p), (x, y), ring)
+        if best is None:
+            self.event('refill_nofire')
+            return
+        _, fire, ring = best
+        self.goto(ring, allow_night=False)
+        if self.ter.mt(*fire) == MT['MT_FIRE_COLD']:
+            self.goto({(fire[0] + dx, fire[1] + dy) for dx, dy in DIRS[::2]
+                       if not self.ter.solid(fire[0] + dx, fire[1] + dy)}, allow_night=False)
+            self.interact(fire, 'light fire (refill)')
+        for _ in range(60):
+            if self.u8('stones') >= 12:
+                break
+            self.buttons(())
+            self.tick()
+        self.event('refilled', stones=self.u8('stones'), fire=fire)
 
     def reach_and_interact(self, target, what, check):
         """Walk next to target (a 4-neighbour), face it, press A until check() holds."""
@@ -973,9 +1178,59 @@ class Pilot:
         raise RuntimeError(f'{what}: no effect')
 
     # ---- the whole world
-    def play(self):
+    def power_cycle(self):
+        """Pull the plug: keep only the battery SRAM, boot a fresh Game Boy with it and continue
+        from the title (A). Checks the saved state came back."""
+        before = {'seed': self.world_layout()['seed'], 'items': self.u8('items'), 'beacons': self.u8('beacons_lit'),
+                  'mods': self.mods(), 'worlds': self.u8('worlds_done'), 'respawn': (self.u16('respawn_x'),
+                                                                                      self.u16('respawn_y'))}
+        sram = self.sram()
+        self.event('power_off', saves=self.u8('dbg_saves'), cell=self.cell())
+        self.buttons(())
+        self.pb.stop(save=False)
+        from pyboy import PyBoy
+        self.ram = io.BytesIO(sram)
+        self.pb = PyBoy(self.rom, window='null', cgb=self.cgb, symbols=self.sym, sound_emulated=False,
+                        ram_file=self.ram)
+        self.pb.set_emulation_speed(0)
+        self.mem = self.pb.memory
+        self.held = set()
+        for _ in range(3000):
+            if self.state() == GS_TITLE:
+                break
+            self.tick()
+        self.tick(60)
+        self.milestone('title_continue')
+        self.press('a')
+        for _ in range(4000):
+            if self.state() == GS_WORLD and self.u8('pal_fade') == 0:
+                break
+            self.tick()
+        after = {'seed': self.world_layout()['seed'], 'items': self.u8('items'), 'beacons': self.u8('beacons_lit'),
+                 'mods': self.mods(), 'worlds': self.u8('worlds_done'), 'respawn': (self.u16('respawn_x'),
+                                                                                     self.u16('respawn_y'))}
+        diff = {k: (before[k], after[k]) for k in before if before[k] != after[k]}
+        self.event('power_on', diff=diff, cell=self.cell(), state=self.u8('pl_state'))
+        self.milestone('continued')
+        self.power_diffs.append(diff)
+        self.wake()
+        self.ter.set_mods(self.mods())
+
+    def sit_until(self, tod_min):
+        """Idle beside the start fire until the clock passes tod_min (sitting runs time 8x)."""
+        f0 = self.frame_n
+        while self.u16('tod') < tod_min:
+            self.buttons(())
+            self.tick()
+            if self.state() != GS_WORLD or self.u8('pl_state') == PL_SLEEP:
+                self.handle_whiteout()
+        self.event('waited', frames=self.frame_n - f0, tod=self.u16('tod'))
+
+    def play(self, power_cycle_after=(), start_tod=None):
         t0 = time.time()
-        result = {'seed': self.seed, 'model': 'cgb' if self.cgb else 'dmg', 'completed': False}
+        self.power_diffs = []
+        result = {'seed': self.seed, 'model': 'cgb' if self.cgb else 'dmg', 'completed': False,
+                  'mode': ('explore' if self.explore else 'omniscient') + ('+walk' if not self.run_ok else '')}
         try:
             self.boot_new_world()
             w = self.layout
@@ -991,7 +1246,12 @@ class Pilot:
             assert self.mods().get(w['start']) == MT['MT_FIRE_LIT'], 'start fire not lit'
             self.tick(20)
             self.milestone('start_fire')
+            if start_tod:
+                self.sit_until(start_tod)
+                self.milestone('evening')
             self.leg_end()
+            if 'start' in power_cycle_after:
+                self.power_cycle()
             # leg 1: beacon 0 (brambles; STONES)
             self.leg_begin('beacon0')
             self.reach_and_interact(w['shrine'][0], 'shrine0',
@@ -1002,6 +1262,8 @@ class Pilot:
             self.milestone('beacon0_lit')
             self.check_land_vs_host('beacon0')
             self.leg_end()
+            if 'beacon0' in power_cycle_after:
+                self.power_cycle()
             # leg 2: beacon 1 (shallows; CLOAK)
             self.leg_begin('beacon1')
             self.reach_and_interact(w['shrine'][1], 'shrine1',
@@ -1012,6 +1274,8 @@ class Pilot:
             self.milestone('beacon1_lit')
             self.check_land_vs_host('beacon1')
             self.leg_end()
+            if 'beacon1' in power_cycle_after:
+                self.power_cycle()
             # leg 3: beacon 2 (crags)
             self.leg_begin('beacon2')
             self.reach_and_interact(w['beacon'][2], 'beacon2', lambda: self.u8('beacons_lit') & 4)
@@ -1019,6 +1283,9 @@ class Pilot:
             self.milestone('beacon2_lit')
             assert self.u8('heart_revealed'), 'heart not revealed after three beacons'
             self.leg_end()
+            if 'beacon2' in power_cycle_after:
+                self.power_cycle()
+                assert self.u8('heart_revealed'), 'heart not revealed after continuing'
             # leg 4: the Heart
             self.leg_begin('heart')
             h = w['heart']
@@ -1026,7 +1293,7 @@ class Pilot:
             done0 = self.u8('worlds_done')
             try:
                 self.goto(adj)
-            except RuntimeError:
+            except (RuntimeError, Interrupt):
                 if self.state() != GS_ENDING:
                     raise
             ok = False
@@ -1034,11 +1301,17 @@ class Pilot:
                 if self.state() == GS_ENDING:
                     ok = True
                     break
+                if self.hooks.get('ending'):
+                    break
                 self.buttons(())
                 self.tick()
+            if self.hooks.get('ending'):
+                self.hooks['ending'](self)
+                ok = True
             assert ok, 'the ending did not start at the Heart'
-            self.tick(150)
-            self.milestone('ending')
+            if self.state() == GS_ENDING:
+                self.tick(150)
+                self.milestone('ending')
             for _ in range(6000):
                 if self.state() == GS_WORLD and self.u8('pal_fade') == 0:
                     break
@@ -1050,9 +1323,18 @@ class Pilot:
             result['worlds_done'] = self.u8('worlds_done')
             result['new_seed'] = w2['seed']
             assert self.state() == GS_WORLD, 'no new world'
-            assert self.u8('worlds_done') == done0 + 1, 'worlds_done did not increment'
+            assert self.u8('worlds_done') == done0 + 1, f"worlds_done {done0} -> {self.u8('worlds_done')}"
             assert w2['seed'] != w['seed'], 'same seed after the ending'
             assert self.u8('beacons_lit') == 0
+            # the new world must be playable: wake and walk a little
+            self.wake()
+            f = self.foot()
+            self.hold_keys(('down',), 30)
+            self.hold_keys(('left',), 30)
+            self.hold_keys(('right',), 30)
+            result['new_world_moved'] = self.foot() != f
+            self.tick(4)
+            self.milestone('new_world_walk')
             result['completed'] = True
         except Exception as e:     # keep the metrics of a failed run
             import traceback
@@ -1069,16 +1351,26 @@ class Pilot:
         result['stones_used'] = sum(L['stones'] for L in self.legs)
         result['watcher_spawns'] = self.watcher_spawns
         result['stuck_spots'] = self.stuck_spots
+        result['collision_holes'] = self.hitbox_bad
+        result['torn_reads'] = self.torn_reads
+        result['power_cycle_diffs'] = self.power_diffs
         result['frame_drops'] = self.u16('dbg_frame_drops') if self.has('dbg_frame_drops') else None
+        for k in ('dbg_stalls', 'dbg_refills', 'dbg_saves'):
+            result[k] = (self.u16(k) if k == 'dbg_stalls' else self.u8(k)) if self.has(k) else None
+        result['stalls_by_keys'] = self.stall_stats
         result['wall_seconds'] = round(time.time() - t0, 1)
         result['events'] = self.events
         result['samples'] = self.samples
-        result['sram'] = None
         with open(os.path.join(self.out, 'result.json'), 'w') as f:
             json.dump(result, f, indent=1, default=str)
         if self.shots:
             contact_sheet(self.shot_list, os.path.join(self.out, 'contact.png'), self.tag)
         return result
+
+    def hold_keys(self, keys, n):
+        self.buttons(keys)
+        self.tick(n)
+        self.buttons(())
 
     def sram(self):
         return bytes(self.mem[0, 0xA000 + i] for i in range(SRAM_SIZE))
@@ -1118,11 +1410,21 @@ def main():
     ap.add_argument('--max-frames', type=int, default=500000)
     ap.add_argument('--no-shots', action='store_true')
     ap.add_argument('--quiet', action='store_true')
+    ap.add_argument('--walk', action='store_true', help='never hold B (walk at 1 px/frame)')
+    ap.add_argument('--power-cycle', default='', help='comma list of legs after which to power-cycle and continue')
+    ap.add_argument('--start-tod', type=int, default=None,
+                    help='sit by the start fire until this time of day first (e.g. 21600 = dusk)')
+    ap.add_argument('--tag', default='', help='suffix for the output folder')
+    ap.add_argument('--div-seed', action='store_true',
+                    help='no memory write at all: take the seed the ROM draws from DIV when SELECT is pressed')
+    ap.add_argument('--explore', action='store_true',
+                    help='compass-only: know only the cells seen on screen (a first-time player)')
     a = ap.parse_args()
     sym = a.sym or os.path.splitext(a.rom)[0] + '.sym'
     p = Pilot(a.rom, sym, a.owgen, a.seed, a.cgb, a.out, max_frames=a.max_frames,
-              log=None if a.quiet else print, shots=not a.no_shots)
-    r = p.play()
+              log=None if a.quiet else print, shots=not a.no_shots, explore=a.explore,
+              walk=a.walk, tag=a.tag, seed_mode='div' if a.div_seed else 'poke')
+    r = p.play(power_cycle_after=tuple(x for x in a.power_cycle.split(',') if x), start_tod=a.start_tod)
     p.stop()
     summary = {k: r[k] for k in ('seed', 'model', 'completed', 'minutes', 'whiteouts', 'rests', 'stones_used',
                                  'watcher_spawns', 'wall_seconds') if k in r}

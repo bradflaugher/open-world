@@ -5,6 +5,7 @@
 #pragma bank 255
 #endif
 #define WORLD_INTERNAL
+#include <string.h>
 #include "world.h"
 
 static uint16_t uabs16(int16_t v) { return v < 0 ? (uint16_t)(-v) : (uint16_t)v; }
@@ -76,14 +77,57 @@ static uint8_t dist2(uint8_t ux, uint8_t uy, uint8_t c)
     return (uint8_t)(a + b);
 }
 
+/* floor(n^2 / 4) for n = 0..510: a * b = qsq[a + b] - qsq[|a - b|] (8 x 8 bits, exact) */
+static const uint16_t qsq[511] = {
+    0, 0, 1, 2, 4, 6, 9, 12, 16, 20, 25, 30, 36, 42, 49, 56,
+    64, 72, 81, 90, 100, 110, 121, 132, 144, 156, 169, 182, 196, 210, 225, 240,
+    256, 272, 289, 306, 324, 342, 361, 380, 400, 420, 441, 462, 484, 506, 529, 552,
+    576, 600, 625, 650, 676, 702, 729, 756, 784, 812, 841, 870, 900, 930, 961, 992,
+    1024, 1056, 1089, 1122, 1156, 1190, 1225, 1260, 1296, 1332, 1369, 1406, 1444, 1482, 1521, 1560,
+    1600, 1640, 1681, 1722, 1764, 1806, 1849, 1892, 1936, 1980, 2025, 2070, 2116, 2162, 2209, 2256,
+    2304, 2352, 2401, 2450, 2500, 2550, 2601, 2652, 2704, 2756, 2809, 2862, 2916, 2970, 3025, 3080,
+    3136, 3192, 3249, 3306, 3364, 3422, 3481, 3540, 3600, 3660, 3721, 3782, 3844, 3906, 3969, 4032,
+    4096, 4160, 4225, 4290, 4356, 4422, 4489, 4556, 4624, 4692, 4761, 4830, 4900, 4970, 5041, 5112,
+    5184, 5256, 5329, 5402, 5476, 5550, 5625, 5700, 5776, 5852, 5929, 6006, 6084, 6162, 6241, 6320,
+    6400, 6480, 6561, 6642, 6724, 6806, 6889, 6972, 7056, 7140, 7225, 7310, 7396, 7482, 7569, 7656,
+    7744, 7832, 7921, 8010, 8100, 8190, 8281, 8372, 8464, 8556, 8649, 8742, 8836, 8930, 9025, 9120,
+    9216, 9312, 9409, 9506, 9604, 9702, 9801, 9900, 10000, 10100, 10201, 10302, 10404, 10506, 10609, 10712,
+    10816, 10920, 11025, 11130, 11236, 11342, 11449, 11556, 11664, 11772, 11881, 11990, 12100, 12210, 12321, 12432,
+    12544, 12656, 12769, 12882, 12996, 13110, 13225, 13340, 13456, 13572, 13689, 13806, 13924, 14042, 14161, 14280,
+    14400, 14520, 14641, 14762, 14884, 15006, 15129, 15252, 15376, 15500, 15625, 15750, 15876, 16002, 16129, 16256,
+    16384, 16512, 16641, 16770, 16900, 17030, 17161, 17292, 17424, 17556, 17689, 17822, 17956, 18090, 18225, 18360,
+    18496, 18632, 18769, 18906, 19044, 19182, 19321, 19460, 19600, 19740, 19881, 20022, 20164, 20306, 20449, 20592,
+    20736, 20880, 21025, 21170, 21316, 21462, 21609, 21756, 21904, 22052, 22201, 22350, 22500, 22650, 22801, 22952,
+    23104, 23256, 23409, 23562, 23716, 23870, 24025, 24180, 24336, 24492, 24649, 24806, 24964, 25122, 25281, 25440,
+    25600, 25760, 25921, 26082, 26244, 26406, 26569, 26732, 26896, 27060, 27225, 27390, 27556, 27722, 27889, 28056,
+    28224, 28392, 28561, 28730, 28900, 29070, 29241, 29412, 29584, 29756, 29929, 30102, 30276, 30450, 30625, 30800,
+    30976, 31152, 31329, 31506, 31684, 31862, 32041, 32220, 32400, 32580, 32761, 32942, 33124, 33306, 33489, 33672,
+    33856, 34040, 34225, 34410, 34596, 34782, 34969, 35156, 35344, 35532, 35721, 35910, 36100, 36290, 36481, 36672,
+    36864, 37056, 37249, 37442, 37636, 37830, 38025, 38220, 38416, 38612, 38809, 39006, 39204, 39402, 39601, 39800,
+    40000, 40200, 40401, 40602, 40804, 41006, 41209, 41412, 41616, 41820, 42025, 42230, 42436, 42642, 42849, 43056,
+    43264, 43472, 43681, 43890, 44100, 44310, 44521, 44732, 44944, 45156, 45369, 45582, 45796, 46010, 46225, 46440,
+    46656, 46872, 47089, 47306, 47524, 47742, 47961, 48180, 48400, 48620, 48841, 49062, 49284, 49506, 49729, 49952,
+    50176, 50400, 50625, 50850, 51076, 51302, 51529, 51756, 51984, 52212, 52441, 52670, 52900, 53130, 53361, 53592,
+    53824, 54056, 54289, 54522, 54756, 54990, 55225, 55460, 55696, 55932, 56169, 56406, 56644, 56882, 57121, 57360,
+    57600, 57840, 58081, 58322, 58564, 58806, 59049, 59292, 59536, 59780, 60025, 60270, 60516, 60762, 61009, 61256,
+    61504, 61752, 62001, 62250, 62500, 62750, 63001, 63252, 63504, 63756, 64009, 64262, 64516, 64770, 65025
+};
+
+static uint16_t mul8(uint8_t a, uint8_t b)
+{
+    uint16_t s = (uint16_t)((uint16_t)a + b);
+    uint8_t d = a > b ? (uint8_t)(a - b) : (uint8_t)(b - a);
+    return (uint16_t)(qsq[s] - qsq[d]);
+}
+
 /* major offset of breakpoint k (0..n+1): round(k * dmaj / (n + 1)) via the 8.8 step q, with two
- * 8x8 multiplies (exact and identical on SDCC and gcc) */
+ * 8x8 multiplies by quarter squares (exact, identical on SDCC and gcc, no multiply call) */
 static uint8_t road_x(const w_road_t *r, uint8_t k)
 {
     uint16_t a, b;
     if (k > r->n) return r->dmaj;
-    a = (uint16_t)((uint16_t)k * (uint8_t)(r->q >> 8));
-    b = (uint16_t)((uint16_t)k * (uint8_t)r->q);
+    a = mul8(k, (uint8_t)(r->q >> 8));
+    b = mul8(k, (uint8_t)r->q);
     b = (uint16_t)(b + 128);
     return (uint8_t)(a + (b >> 8));
 }
@@ -168,63 +212,68 @@ static uint8_t box_hit(uint16_t kx, uint16_t ky, const wpos_t *c, uint8_t rad)
     return d <= (uint16_t)(rad + rad + 3);
 }
 
-/* can road r pass through the 4x4 block at (kx, ky)? (conservative) */
-static uint8_t road_hits_block(const w_road_t *r, uint16_t kx, uint16_t ky)
+/* road cells of the 4x4 block at (kx, ky): bit (fy << 2) | fx. The block's 4 minor rows span
+ * at most two steps of the stair (a step is >= 4), so three breakpoints are enough. */
+static w_road_t rr;   /* the road being tested (a global copy: SDCC handles it far better) */
+
+static uint8_t rr_x(uint8_t k)
 {
-    uint16_t maj, mn, t0, t1, o0;
-    uint8_t k0, k1, a, b;
-    if (r->flags & W_R_YMAJOR) { maj = ky; mn = kx; } else { maj = kx; mn = ky; }
-    /* minor range of the block, as road parameter t */
-    if (r->flags & W_R_MINNEG) {
-        t0 = (uint16_t)(r->a_min - (uint16_t)(mn + 3));
-        t1 = (uint16_t)(r->a_min - mn);
-    } else {
-        t0 = (uint16_t)(mn - r->a_min);
-        t1 = (uint16_t)(t0 + 3);
-    }
-    if ((int16_t)t1 < 0 || (int16_t)t0 > (int16_t)r->dmin) return 0;
-    if ((int16_t)t0 < 0) t0 = 0;
-    if (t1 > r->dmin) t1 = r->dmin;
-    k0 = (uint8_t)((uint8_t)t0 >> r->shift);
-    k1 = (uint8_t)((uint8_t)t1 >> r->shift);
-    if ((uint8_t)t1 == r->dmin) k1 = r->n;
-    a = road_x(r, k0);
-    b = road_x(r, (uint8_t)(k1 + 1));
-    /* major range of the block, as offset o from a_maj */
-    if (r->flags & W_R_MAJNEG) o0 = (uint16_t)(r->a_maj - (uint16_t)(maj + 3));
-    else o0 = (uint16_t)(maj - r->a_maj);
-    if ((int16_t)o0 < -3) return 0;
-    if ((int16_t)o0 > (int16_t)b) return 0;
-    return (int16_t)(o0 + 3) >= (int16_t)a;
+    uint16_t a, b;
+    if (k > rr.n) return rr.dmaj;
+    a = mul8(k, (uint8_t)(rr.q >> 8));
+    b = mul8(k, (uint8_t)rr.q);
+    b = (uint16_t)(b + 128);
+    return (uint8_t)(a + (b >> 8));
 }
 
-/* road cells of the 4x4 block at (kx, ky): bit (fy << 2) | fx */
+/* bits lo..hi of a 4-bit row (lo, hi clipped to 0..3; empty if lo > hi) */
+static uint8_t span4(int16_t lo, int16_t hi)
+{
+    if (lo < 0) lo = 0;
+    if (hi > 3) hi = 3;
+    if (lo > hi) return 0;
+    return (uint8_t)((0x0F << (uint8_t)lo) & (0x0F >> (uint8_t)(3 - hi)) & 0x0F);
+}
+
+/* a 4-bit row mask spread to bits 0, 4, 8, 12 (a column of the block) */
+static const uint16_t spread4[16] = {
+    0x0000, 0x0001, 0x0010, 0x0011, 0x0100, 0x0101, 0x0110, 0x0111,
+    0x1000, 0x1001, 0x1010, 0x1011, 0x1100, 0x1101, 0x1110, 0x1111
+};
+
 uint16_t w_block_roads(uint16_t kx, uint16_t ky, uint8_t mask) WBANKED
 {
-    uint16_t bits = 0, maj0, mn0, t;
-    uint8_t i, a, b, j, f, o;
-    const w_road_t *r;
+    uint16_t bits = 0, maj0, mn0;
+    uint8_t i, a, b, j, f, k0, x0, x1, x2, t0, sm, row;
+    int16_t ts, o0, t;
     for (i = 0; i < W_NUM_ROADS; i++) {
         if (!(mask & (uint8_t)(W_SPM_ROAD0 << i))) continue;
-        r = &w_roads[i];
-        if (r->flags & W_R_YMAJOR) { maj0 = ky; mn0 = kx; } else { maj0 = kx; mn0 = ky; }
-        for (j = 0; j < 4; j++) {          /* the 4 minor coordinates of the block */
-            t = (r->flags & W_R_MINNEG) ? (uint16_t)(r->a_min - (uint16_t)(mn0 + j)) : (uint16_t)((uint16_t)(mn0 + j) - r->a_min);
-            if (t > r->dmin) continue;
-            if ((uint8_t)t == r->dmin) { a = road_x(r, r->n); b = r->dmaj; }
-            else {
-                f = (uint8_t)((uint8_t)t >> r->shift);
-                b = road_x(r, (uint8_t)(f + 1));
-                a = ((uint8_t)t & (uint8_t)((1u << r->shift) - 1)) ? b : road_x(r, f);
-            }
-            for (f = 0; f < 4; f++) {      /* the 4 major coordinates */
-                t = (r->flags & W_R_MAJNEG) ? (uint16_t)(r->a_maj - (uint16_t)(maj0 + f)) : (uint16_t)((uint16_t)(maj0 + f) - r->a_maj);
-                if (t > 255) continue;
-                o = (uint8_t)t;
-                if (o < a || o > b) continue;
-                if (r->flags & W_R_YMAJOR) bits |= (uint16_t)(1u << ((f << 2) | j));
-                else bits |= (uint16_t)(1u << ((j << 2) | f));
-            }
+        memcpy(&rr, &w_roads[i], sizeof rr);
+        if (rr.flags & W_R_YMAJOR) { maj0 = ky; mn0 = kx; } else { maj0 = kx; mn0 = ky; }
+        /* road parameter t of the block's first minor row, major offset of its first cell */
+        ts = (rr.flags & W_R_MINNEG) ? (int16_t)(rr.a_min - mn0) : (int16_t)(mn0 - rr.a_min);
+        if (ts < -3 || ts > (int16_t)rr.dmin + 3) continue;
+        o0 = (rr.flags & W_R_MAJNEG) ? (int16_t)(rr.a_maj - maj0) : (int16_t)(maj0 - rr.a_maj);
+        if (o0 < -3 || o0 > (int16_t)rr.dmaj + 3) continue;
+        t0 = (uint8_t)((rr.flags & W_R_MINNEG) ? (ts < 3 ? 0 : ts - 3) : (ts < 0 ? 0 : ts));
+        k0 = (uint8_t)(t0 >> rr.shift);
+        x0 = rr_x(k0);
+        x1 = rr_x((uint8_t)(k0 + 1));
+        x2 = rr_x((uint8_t)(k0 + 2));
+        sm = (uint8_t)((1u << rr.shift) - 1);
+        for (j = 0; j < 4; j++) {          /* the 4 minor rows of the block */
+            t = (rr.flags & W_R_MINNEG) ? (int16_t)(ts - j) : (int16_t)(ts + j);
+            if (t < 0 || t > (int16_t)rr.dmin) continue;
+            f = (uint8_t)t;
+            if (f == rr.dmin) { a = rr_x(rr.n); b = rr.dmaj; }
+            else if ((uint8_t)(f >> rr.shift) == k0) { b = x1; a = (f & sm) ? x1 : x0; }
+            else { b = x2; a = (f & sm) ? x2 : x1; }
+            /* cells f of the row with offset o0 +- f in [a, b] */
+            if (rr.flags & W_R_MAJNEG) row = span4((int16_t)(o0 - b), (int16_t)(o0 - a));
+            else row = span4((int16_t)(a - o0), (int16_t)(b - o0));
+            if (!row) continue;
+            if (rr.flags & W_R_YMAJOR) bits |= (uint16_t)(spread4[row] << j);   /* a column */
+            else bits |= (uint16_t)((uint16_t)row << (j << 2));
         }
     }
     return bits;
@@ -238,10 +287,7 @@ uint8_t w_block_mask(uint16_t kx, uint16_t ky, uint8_t mask) WBANKED
             m |= (uint8_t)(W_SPM_BEACON0 << i);
     if ((mask & W_SPM_OTHER) && (box_hit(kx, ky, &world.heart, 4) || box_hit(kx, ky, &world.start, 3)))
         m |= W_SPM_OTHER;
-    for (i = 0; i < W_NUM_ROADS; i++)
-        if ((mask & (uint8_t)(W_SPM_ROAD0 << i)) && road_hits_block(&w_roads[i], kx, ky))
-            m |= (uint8_t)(W_SPM_ROAD0 << i);
-    return m;
+    return (uint8_t)(m | (mask & 0x0F));   /* causeways: resolved by w_block_roads */
 }
 
 uint8_t w_piece(uint16_t mx, uint16_t my, uint8_t mask) WBANKED

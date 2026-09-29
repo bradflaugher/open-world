@@ -53,6 +53,20 @@ static void test_determinism(void)
     diff = 0;
     for (i = 0; i < N; i++) if (world_mt(xs[i], ys[i]) != a[i]) diff++;
     CHECK(diff > N / 4);
+    /* no state leaks from one seed to the next (caches must be fully reset by world_init) */
+    world_init(8);
+    for (i = 0; i < N; i++) (void)world_mt(xs[i], ys[i]);
+    world_init(7);
+    diff = 0;
+    for (i = 0; i < N; i++) if (world_mt(xs[i], ys[i]) != a[i]) diff++;
+    CHECK_EQ(diff, 0);
+    /* nor from far-away queries (other cache regions) */
+    world_init(7);
+    (void)world_mt(0, 0);
+    (void)world_mt(40000, 1000);
+    diff = 0;
+    for (i = 0; i < N; i++) if (world_mt(xs[i], ys[i]) != a[i]) diff++;
+    CHECK_EQ(diff, 0);
     /* nearby seeds give different layouts */
     {
         wpos_t s1, s2;

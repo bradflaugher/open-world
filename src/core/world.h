@@ -210,8 +210,8 @@ uint8_t w_old_cairn(uint16_t mx, uint16_t my) WBANKED;
 #endif
 
 
-#ifndef __SDCC
-/* ---- host-only operation counters (to bound the cost of a call; see tests/test_core.c) ---- */
+#if !defined(__SDCC) || defined(WORLD_OPCOUNT)
+/* ---- operation counters (host; or a Game Boy diagnostic build with -DWORLD_OPCOUNT) ---- */
 enum { W_OP_MT, W_OP_HIT, W_OP_CELL, W_OP_LATTICE, W_OP_HASH, W_OP_POI_ROLL, W_OP_POI_CHECK,
        W_OP_PIECE, W_OP_RUIN, W_OP_CAIRN, W_OP_BLOCK, W_OP_MOD_FIND, W_OP_COUNT };
 extern uint32_t w_ops[W_OP_COUNT];
