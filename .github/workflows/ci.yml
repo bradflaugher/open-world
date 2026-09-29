@@ -52,8 +52,8 @@ jobs:
       - name: Emulator tests (DMG + CGB, walks the world)
         run: make test-rom
 
-      - name: Generator statistics
-        run: build/ibgen stats 50 60 | tail -n 5
+      - name: World generator statistics
+        run: build/owgen stats 1 64 | tail -n 12
 
       - name: Upload ROM and screenshots
         uses: actions/upload-artifact@v4
