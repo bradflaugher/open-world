@@ -94,11 +94,11 @@ static void frame_tiles(void)
     uint8_t row[20], x, y;
     for (y = 0; y < 18; y++) {
         for (x = 0; x < 20; x++) {
-            uint8_t t = MAP_T0 + MAP_T_SHADE1;
+            uint8_t t = (uint8_t)(MAP_T0 + MAP_T_SHADE1);
             if (y == 1 && x >= 1 && x <= 18) t = (uint8_t)(MAP_T0 + (x == 1 ? MAP_T_TL : x == 18 ? MAP_T_TR : MAP_T_T));
             else if (y == 16 && x >= 1 && x <= 18) t = (uint8_t)(MAP_T0 + (x == 1 ? MAP_T_BL : x == 18 ? MAP_T_BR : MAP_T_B));
-            else if (y >= 2 && y <= 15 && x == 1) t = MAP_T0 + MAP_T_L;
-            else if (y >= 2 && y <= 15 && x == 18) t = MAP_T0 + MAP_T_R;
+            else if (y >= 2 && y <= 15 && x == 1) t = (uint8_t)(MAP_T0 + MAP_T_L);
+            else if (y >= 2 && y <= 15 && x == 18) t = (uint8_t)(MAP_T0 + MAP_T_R);
             else if (y >= 2 && y <= 15 && x >= 2 && x <= 17) t = (uint8_t)((y - 2) * MAP_COLS + (x - 2));
             row[x] = t;
         }

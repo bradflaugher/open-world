@@ -108,7 +108,7 @@ void pal_apply(void) BANKED
 
 void pal_title(void) BANKED
 {
-    uint8_t p, c;
+    uint8_t p;
     nx_land_bgp = shade_lerp(0xE4, 0x00, pal_fade);
     nx_obp0 = shade_lerp(dmg_o0_r[PH_DAY], 0x00, pal_fade);
     nx_obp1 = shade_lerp(dmg_o1_r[PH_DAY], 0x00, pal_fade);
@@ -116,7 +116,6 @@ void pal_title(void) BANKED
     if (LCDC_REG & LCDCF_ON) while (pal_req) { __asm__("halt"); __asm__("nop"); }
     for (p = 0; p < 32; p++) pal_bg_buf[p] = lerp555(title_pal_r[p], 0x7FFF, pal_fade);
     cgb_compute(cgb_obj, pal_obj_buf, 0xFF);
-    for (p = 0; p < 32; p++) pal_obj_buf[p] = lerp555(pal_obj_buf[p], 0x7FFF, pal_fade);
     pal_req = 3;
     if (!(LCDC_REG & LCDCF_ON)) pal_upload_now();
 }

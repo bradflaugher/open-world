@@ -135,7 +135,7 @@ void hud_update(void) BANKED
         if ((item_pulse & 8) && item_pulse > 60) { spr_hide(SP_ICON); return; }
     }
     if (equipped == IT_STONES && !stones && (vbl_frames & 32)) { spr_hide(SP_ICON); return; }
-    spr_set(SP_ICON, 160 - 12 + 8, y, tile, (uint8_t)(is_cgb ? OPAL_UI : 0));
+    spr_set(SP_ICON, (uint8_t)(160 - 12 + 8), y, tile, (uint8_t)(is_cgb ? OPAL_UI : 0));
 }
 
 void fx_update(void) BANKED

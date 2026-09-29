@@ -520,7 +520,7 @@ static void title_sprites(uint8_t have_save, uint16_t seed, uint8_t t)
     }
     /* seed sigil */
     for (i = 0; i < 4; i++) {
-        if (have_save) spr_set((uint8_t)(10 + i), (uint8_t)(80 - 22 + i * 12 + 8), 16 + 124, (uint8_t)(TSPR_BASE + i * 2), pal_ui);
+        if (have_save) spr_set((uint8_t)(10 + i), (uint8_t)(80 - 22 + i * 12 + 8), (uint8_t)(16 + 124), (uint8_t)(TSPR_BASE + i * 2), pal_ui);
         else spr_hide((uint8_t)(10 + i));
     }
     (void)seed;
