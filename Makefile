@@ -64,7 +64,7 @@ $(OBJ):
 $(BUILD)/test_core: tests/test_core.c $(CORE_SRC) $(wildcard src/core/*.h) | $(BUILD)
 	$(CC) $(HOST_CFLAGS) -Isrc/core -o $@ tests/test_core.c $(CORE_SRC)
 
-$(BUILD)/test_sound: tests/test_sound.c src/gb/sound.c src/gb/sound.h | $(BUILD)
+$(BUILD)/test_sound: tests/test_sound.c src/gb/sound.c src/gb/sound_core.c $(wildcard src/gb/sound*.h) src/gb/hw_sound.h | $(BUILD)
 	$(CC) $(HOST_CFLAGS) -DHOST_TEST -Isrc/gb -Isrc/core -o $@ tests/test_sound.c src/gb/sound.c
 
 $(BUILD)/owgen: tools/owgen.c $(CORE_SRC) $(wildcard src/core/*.h) | $(BUILD)

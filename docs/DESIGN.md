@@ -107,25 +107,34 @@ own sky palettes (gradient rows via attributes).
 
 **Mods.** A small table of `(mx, my, metatile)` overrides holds world state: lit fires, lit
 beacons, taken shrines, placed cairns, stepping stones and burnt brambles. It is saved to
-SRAM.
+SRAM. It has 96 slots, so when fewer than 24 are free the main loop lets the farthest edit
+that is easy to make again (more than 20 cells away) return to the land: a lit fire burns down
+(never the one you wake at), a stepping stone sinks, burnt thorns grow back. Beacons, shrines
+and cairns are never touched. This way a long world can't fill the table and stop you lighting
+fires.
 
 ## 5. Player and verbs
 
 - **D-pad:** walk in 8 directions at 1 px/frame. **B held:** run at 2 px/frame.
 - **A:** use the equipped item. **SELECT:** cycle items. **START:** map.
-- **Stand still for about 3 s** and the wanderer sits. Time runs 8x while you sit. This
-  skips nights without grind, and it is where the quiet moments happen.
+- **Stand still for about 3 s** and the wanderer sits. Time runs 8x while you sit by a fire.
+  This skips nights without grind, and it is where the quiet moments happen. Away from a fire,
+  A stands up *and* acts, so a pause never swallows a press.
 - **LANTERN** (you have it from the start):
   - A on a cold fire or beacon: light it.
   - A on brambles: burn them.
   - At night the lantern is always lit: a sprite-dither **glow** around the player
     (hardware trick #2, see below).
-- **STONES** (a pouch of 12; it refills at any fire):
+- **STONES** (an endless pouch):
   - A on land: build a cairn. It shows on the map and on the band, and carries into the
     next world.
   - A on shallows: place a stepping stone.
-- **CLOAK:** A while moving: glide 3 metatiles forward over anything. You must land on
-  passable ground, or the glide is refused with a "no" sound and a shake.
+  - Up to 32 of your cairns stand at once. Building another takes down the oldest.
+- **CLOAK:** A: glide forward over anything the cloak can pass (rock, water, thorns). It lands
+  3 metatiles away, or 4 or 2 when that is the nearest passable ground. The crag ring is thicker
+  at an angle than straight on. On a diagonal it also tries the two straight directions, the
+  blocked side first. If nothing fits, the glide is refused with a "no" sound and a shake. An A
+  pressed in the last few frames of a glide is kept for the landing, so glides chain.
 - **Warmth:** 4 pips.
   - It drains at night away from fire, twice as fast in tundra and desert nights.
   - It refills beside a lit fire or beacon, and slowly by day.
@@ -145,7 +154,8 @@ SRAM.
 - **CGB:** each palette class (grass, forest, water, sand, snow, rock/ash, light, sky) lerps
   between four times of day. The palette is uploaded in VBlank.
 - **Weather** is deterministic per region per day: rain streaks (sprites), snow in tundra,
-  and fog (palette contrast collapses). Occasional lightning flashes in storms.
+  and fog (the palette softens toward grey: a veil, never a white-out). Storms bring an
+  occasional single lightning flash.
 
 ## 7. Watchers (stretch)
 
@@ -164,7 +174,8 @@ progressively ("surveying"), with the LCD on.
 ## 9. Sound
 
 A generative ambient engine:
-- **CH3 (wave):** a drone for each biome.
+- **CH3 (wave):** a drone for each biome. It breathes: 5-10 s of tone, a fade, 2-4 s of rest.
+  One unbroken, unchanging tone is what a crashed Game Boy sounds like.
 - **CH1:** sparse pentatonic phrases from an LFSR, in the biome's mode.
 - **CH2:** an echo of CH1.
 - **CH4:** wind, gusting.

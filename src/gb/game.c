@@ -77,11 +77,13 @@ static void biome_update(void)
     if (b != 0xFF) biome_here = b;
 }
 
+static uint8_t carry_pressed;     /* presses from a game frame that skipped the wanderer */
 static void input(void)
 {
     prev_keys = keys;
     keys = joypad();
-    pressed = (uint8_t)(keys & ~prev_keys);
+    pressed = (uint8_t)((keys & ~prev_keys) | carry_pressed);
+    carry_pressed = 0;
 }
 
 static uint8_t rnd8(void)
@@ -321,8 +323,8 @@ static void weather_update(void)
     wx_biome = biome_here;
     h = wx_hash((uint16_t)(rx ^ world.seed), (uint16_t)(ry ^ (dc << 6) ^ (dc << 11)));
     b = biome_here;
-    if (h < 150) w = WX_CLEAR;
-    else if (h < 195) w = WX_RAIN;
+    if (h < 160) w = WX_CLEAR;
+    else if (h < 200) w = WX_RAIN;
     else if (h < 230) w = WX_FOG;
     else w = WX_STORM;
     if (b == B_TUNDRA && (w == WX_RAIN || w == WX_STORM)) w = WX_SNOW;
@@ -385,19 +387,22 @@ static void warmth_tick(uint8_t tf)
         if ((items & (1 << IT_STONES)) && stones < STONES_MAX) stones = STONES_MAX;
         return;
     }
+    /* (rates in 1/64 warmth per frame; 1023 is full) a clear night in the meadow away from any
+       fire costs about seven eighths of your warmth instead of more than all of it; a snowy
+       tundra night still bites, but leaves about 80 s to find a fire instead of under one */
     if (phase == PH_NIGHT) {
-        rate = 7;
-        if (biome_here == B_TUNDRA || biome_here == B_DESERT) rate = 10;
+        rate = 5;
+        if (biome_here == B_TUNDRA || biome_here == B_DESERT) rate = 7;
         m = land_rel(0, 0);
-        if (mt_flags[m] & MTF_COLD) rate += 5;
-        if (weather == WX_RAIN || weather == WX_STORM) rate += 3;
-        if (weather == WX_SNOW) rate += 5;
+        if (mt_flags[m] & MTF_COLD) rate += 3;
+        if (weather == WX_RAIN || weather == WX_STORM) rate += 2;
+        if (weather == WX_SNOW) rate += 3;
     } else if (phase == PH_DAY) {
         warm_acc += (uint16_t)(4u * tf);
         while (warm_acc >= 64) { warm_acc -= 64; if (warmth < WARMTH_MAX) warmth++; }
         return;
     } else if (biome_here == B_TUNDRA) {
-        rate = 3;       /* the cold of the snowfields bites at dawn and dusk too */
+        rate = 2;       /* the cold of the snowfields bites at dawn and dusk too */
     }
     warm_acc += (uint16_t)(rate * tf);
     while (warm_acc >= 64) {
@@ -476,7 +481,10 @@ static uint16_t fresh_seed(void)
 {
     uint16_t s;
     if (dbg_seed) { s = dbg_seed; dbg_seed = 0; return s; }
+    /* the moment you press / arrive (DIV runs at 16 kHz) plus how the last world was played */
     s = (uint16_t)(((uint16_t)DIV_REG << 8) ^ vbl_frames ^ (world.seed * 31u) ^ 0x2B1Du);
+    s ^= (uint16_t)(tod ^ (day_count << 9) ^ ((uint16_t)pl_mx << 3) ^ pl_my ^ ((uint16_t)cairn_n << 12));
+    if (s == world.seed) s ^= 0x9E37;       /* never the same world twice in a row */
     if (!s) s = 0x2B1D;
     return s;
 }
@@ -639,9 +647,17 @@ void world_frame(void) BANKED
        with 2 px for this frame's move and some for the VBlank queue. */
     rx = (int16_t)(((int16_t)(cam_mx - land_x0) << 4) + cam_sx);
     ry = (int16_t)(((int16_t)(cam_my - land_y0) << 4) + cam_sy);
-    if (rx < 0 || rx > 88 || ry < 0 || ry > 128) { request(REQ_REFILL); return; }
+    if (rx < 0 || rx > 88 || ry < 0 || ry > 128) {
+        carry_pressed = (uint8_t)(pressed & (J_A | J_SELECT));
+        request(REQ_REFILL);
+        return;
+    }
     PSTAGE(PF_INPUT);
-    if (rx < 10 || rx > 62 || ry < 10 || ry > 102) dbg_stalls++;
+    if (rx < 10 || rx > 62 || ry < 10 || ry > 102) {
+        /* the wanderer waits for the streamer: a press this frame is kept, not dropped */
+        dbg_stalls++;
+        carry_pressed = (uint8_t)(pressed & (J_A | J_SELECT));
+    }
     else player_update();
     PSTAGE(PF_PLAYER);
     dbg_stage = 2;
@@ -669,6 +685,43 @@ void world_frame(void) BANKED
     if (prof_t > dbg_hook_ly) dbg_hook_ly = prof_t;
 }
 
+/* The mods table is finite (and saved as is). When it runs low, the edits that are easy to make
+ * again and far out of sight return to the land, farthest first: a lit fire burns down (never
+ * the one you would wake at), a stepping stone sinks, burnt thorns grow back. Beacons, shrines
+ * and cairns are never touched. Without this a long world filled the table and the fires on the
+ * way to the Heart could no longer be lit. Main loop only (the core is not re-entrant). */
+#define TIDY_FREE (EDIT_RESERVE + 8)     /* keep this many slots free */
+#define TIDY_DIST 20                     /* only well outside the streamed window */
+static uint8_t mods_tidy(void)
+{
+    uint8_t i, best = 0xFF, m;
+    uint16_t bd = TIDY_DIST, d, e;
+    const wmod_t *p = world_mods;
+    uint16_t rsx, rsy;
+    if ((uint8_t)(MAX_MODS - world_mod_count) > TIDY_FREE) return 0;
+    snap();
+    __critical { rsx = respawn_x; rsy = respawn_y; }
+    for (i = 0; i < world_mod_count; i++, p++) {
+        m = p->mt;
+        if (m != MT_FIRE_LIT && m != MT_STEPSTONE && m != MT_ASH) continue;
+        if (m == MT_FIRE_LIT && p->x == rsx && p->y == rsy) continue;
+        d = (uint16_t)(p->x - s_mx); if (d & 0x8000) d = (uint16_t)-d;
+        e = (uint16_t)(p->y - s_my); if (e & 0x8000) e = (uint16_t)-e;
+        if (e > d) d = e;
+        if (d > bd) { bd = d; best = i; }
+    }
+    if (best == 0xFF) return 0;
+    {
+        uint16_t x = world_mods[best].x, y = world_mods[best].y;
+        world_mod_count--;
+        world_mods[best] = world_mods[world_mod_count];
+        world_mods_rebuild();
+        land_set(x, y, world_mt(x, y));
+    }
+    warm_dirty = 1;
+    return 1;
+}
+
 static void world_run(void)
 {
     uint8_t r, cx0, cy0;
@@ -679,6 +732,7 @@ static void world_run(void)
         while (!world_req) {
             bg_task();
             if (eq_apply()) continue;
+            if (!(vbl_frames & 15) && mods_tidy()) continue;
             if (save_req) { save_req = 0; save_write(); continue; }
             __critical { cx = cam_mx; cy = cam_my; }
             r = land_update(cx, cy, 3);
@@ -878,6 +932,7 @@ void game_main(void) BANKED
         choice = title();
         if (choice == 1 && save_load()) {
             pl_state = PL_SLEEP;
+            if (items & (1 << IT_STONES)) stones = STONES_MAX;   /* older saves: the pouch is endless now */
             heart_revealed = (uint8_t)(beacons_lit == 7);
             ambient_seed(world.seed);
         } else {
