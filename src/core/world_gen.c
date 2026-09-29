@@ -284,18 +284,20 @@ uint8_t w_old_cairn(uint16_t mx, uint16_t my) WBANKED
 /* Two cached lattice cells per octave, slot (kx ^ ky) & 1 (so horizontally or vertically
  * adjacent cells never evict each other), each with its rows interpolated at the last fx.
  * Always horizontal first: the rounding makes the order matter, and results must not depend
- * on the cache state. */
-typedef struct {
-    uint16_t kx[2], ky[2];       /* cell keys (0xFFFF: none) */
-    uint8_t c[2][4];             /* corner hashes TL TR BL BR */
-    uint8_t hf[2], ht[2], hb[2]; /* fx of the cached rows, and the rows */
-} oct_t;
-static oct_t o_c, o_s, o_m, o_e;   /* continents 64, strangeness 64, moisture 32, elevation 16 */
+ * on the cache state. Written out per slot with macros: SDCC compiles plain globals far
+ * better than struct pointers or indexed arrays. */
+#define OCT_VALS(o) \
+    static uint8_t o##_a0, o##_b0, o##_c0, o##_d0, o##_f0, o##_t0, o##_u0; \
+    static uint8_t o##_a1, o##_b1, o##_c1, o##_d1, o##_f1, o##_t1, o##_u1;
+#define OCT_DECL(o) static uint16_t o##_x0, o##_y0, o##_x1, o##_y1; OCT_VALS(o)
+OCT_DECL(oc)   /* continents, 64 grid */
+OCT_VALS(os)   /* strangeness, 64 grid (same keys as oc) */
+OCT_DECL(om)   /* moisture, 32 grid */
+OCT_DECL(oe)   /* elevation, 16 grid */
 
 void w_lattice_reset(void) WBANKED
 {
-    o_c.kx[0] = o_c.kx[1] = o_s.kx[0] = o_s.kx[1] = 0xFFFF;
-    o_m.kx[0] = o_m.kx[1] = o_e.kx[0] = o_e.kx[1] = 0xFFFF;
+    oc_x0 = oc_x1 = om_x0 = om_x1 = oe_x0 = oe_x1 = 0xFFFF;
 }
 
 /* inner three rounds of w_hash (shared by all salts) */
@@ -306,43 +308,51 @@ static uint8_t hash3(uint16_t x, uint16_t y)
     return (uint8_t)(w_perm[(uint8_t)(h ^ (uint8_t)(x >> 8) ^ w_s1)] ^ (uint8_t)(y >> 8));
 }
 
-static uint8_t oj;   /* slot of the octave cell being evaluated */
+static uint16_t okx, oky;
+static uint8_t w_la, w_lb, w_lc, w_ld, w_sa, w_sb, w_sc, w_sd;
+static uint8_t ofx, ofy;
 
-/* find / fill the cell (kx, ky) of octave o; returns 1 if it had to be filled */
-static uint8_t oct_find(oct_t *o, uint16_t kx, uint16_t ky)
-{
-    oj = (uint8_t)(((uint8_t)kx ^ (uint8_t)ky) & 1);
-    if (o->kx[oj] == kx && o->ky[oj] == ky) return 0;
-    o->kx[oj] = kx;
-    o->ky[oj] = ky;
-    o->hf[oj] = 0xFF;
-    return 1;
-}
+/* 4 corner hashes of cell (okx, oky) with salt -> a, b, c, d */
+#define OCT_FILL(o, j, salt) do { \
+    w_salt = (salt); \
+    o##_a##j = w_hash(okx, oky); \
+    o##_b##j = w_hash((uint16_t)(okx + 1), oky); \
+    o##_c##j = w_hash(okx, (uint16_t)(oky + 1)); \
+    o##_d##j = w_hash((uint16_t)(okx + 1), (uint16_t)(oky + 1)); \
+    o##_f##j = 0xFF; } while (0)
+/* value at (ofx, ofy) (n-bit fractions) of slot j */
+#define OCT_VAL(o, j, n, out) do { \
+    w_ln = (n); \
+    if (ofx != o##_f##j) { \
+        o##_f##j = ofx; \
+        w_lf = ofx; \
+        o##_t##j = w_lerpn(o##_a##j, o##_b##j); \
+        o##_u##j = w_lerpn(o##_c##j, o##_d##j); \
+    } \
+    w_lf = ofy; \
+    out = w_lerpn(o##_t##j, o##_u##j); } while (0)
+/* the single-field octaves */
+#define OCT(o, salt, n, out) do { \
+    if (((uint8_t)okx ^ (uint8_t)oky) & 1) { \
+        if (o##_x1 != okx || o##_y1 != oky) { o##_x1 = okx; o##_y1 = oky; OCT_FILL(o, 1, salt); } \
+        OCT_VAL(o, 1, n, out); \
+    } else { \
+        if (o##_x0 != okx || o##_y0 != oky) { o##_x0 = okx; o##_y0 = oky; OCT_FILL(o, 0, salt); } \
+        OCT_VAL(o, 0, n, out); \
+    } } while (0)
 
-static void oct_fill(oct_t *o, uint16_t kx, uint16_t ky, uint8_t salt)
+/* continents and strangeness: one cell, shared inner hash */
+static void cs_fill(void)
 {
-    uint8_t *c = o->c[oj];
-    w_salt = salt;
-    c[0] = w_hash(kx, ky);
-    c[1] = w_hash((uint16_t)(kx + 1), ky);
-    ky++;
-    c[2] = w_hash(kx, ky);
-    c[3] = w_hash((uint16_t)(kx + 1), ky);
-}
-
-static uint8_t oct_val(oct_t *o, uint8_t fx, uint8_t fy, uint8_t n)
-{
-    uint8_t j = oj;
-    const uint8_t *c = o->c[j];
-    w_ln = n;
-    if (fx != o->hf[j]) {
-        o->hf[j] = fx;
-        w_lf = fx;
-        o->ht[j] = w_lerpn(c[0], c[1]);
-        o->hb[j] = w_lerpn(c[2], c[3]);
-    }
-    w_lf = fy;
-    return w_lerpn(o->ht[j], o->hb[j]);
+    uint8_t h;
+    h = hash3(okx, oky);
+    w_la = w_perm[h ^ SALT_C]; w_sa = w_perm[h ^ SALT_S];
+    h = hash3((uint16_t)(okx + 1), oky);
+    w_lb = w_perm[h ^ SALT_C]; w_sb = w_perm[h ^ SALT_S];
+    h = hash3(okx, (uint16_t)(oky + 1));
+    w_lc = w_perm[h ^ SALT_C]; w_sc = w_perm[h ^ SALT_S];
+    h = hash3((uint16_t)(okx + 1), (uint16_t)(oky + 1));
+    w_ld = w_perm[h ^ SALT_C]; w_sd = w_perm[h ^ SALT_S];
 }
 
 /* Field values at a 4-metatile lattice point (lx, ly) = (mx >> 2, my >> 2):
@@ -350,30 +360,41 @@ static uint8_t oct_val(oct_t *o, uint8_t fx, uint8_t fy, uint8_t n)
  * moisture (32 grid), strangeness (64 grid); value noise, bilinear. */
 void w_lattice(uint16_t lx, uint16_t ly) WBANKED
 {
-    uint8_t c, k, xl = (uint8_t)lx, yl = (uint8_t)ly, *pc, *ps;
-    uint16_t kx = lx >> 4, ky = ly >> 4;
+    uint8_t c, k, xl = (uint8_t)lx, yl = (uint8_t)ly;
     W_OP(W_OP_LATTICE);
-    if (oct_find(&o_c, kx, ky)) {
-        oct_find(&o_s, kx, ky);
-        o_s.kx[oj] = kx;
-        pc = o_c.c[oj];
-        ps = o_s.c[oj];
-        c = hash3(kx, ky);                     pc[0] = w_perm[c ^ SALT_C]; ps[0] = w_perm[c ^ SALT_S];
-        c = hash3((uint16_t)(kx + 1), ky);     pc[1] = w_perm[c ^ SALT_C]; ps[1] = w_perm[c ^ SALT_S];
-        c = hash3(kx, (uint16_t)(ky + 1));     pc[2] = w_perm[c ^ SALT_C]; ps[2] = w_perm[c ^ SALT_S];
-        c = hash3((uint16_t)(kx + 1), (uint16_t)(ky + 1)); pc[3] = w_perm[c ^ SALT_C]; ps[3] = w_perm[c ^ SALT_S];
+    okx = lx >> 4;
+    oky = ly >> 4;
+    ofx = xl & 15;
+    ofy = yl & 15;
+    if (((uint8_t)okx ^ (uint8_t)oky) & 1) {
+        if (oc_x1 != okx || oc_y1 != oky) {
+            oc_x1 = okx; oc_y1 = oky;
+            cs_fill();
+            oc_a1 = w_la; oc_b1 = w_lb; oc_c1 = w_lc; oc_d1 = w_ld; oc_f1 = 0xFF;
+            os_a1 = w_sa; os_b1 = w_sb; os_c1 = w_sc; os_d1 = w_sd; os_f1 = 0xFF;
+        }
+        OCT_VAL(oc, 1, 4, k);
+        OCT_VAL(os, 1, 4, w_ls);
+    } else {
+        if (oc_x0 != okx || oc_y0 != oky) {
+            oc_x0 = okx; oc_y0 = oky;
+            cs_fill();
+            oc_a0 = w_la; oc_b0 = w_lb; oc_c0 = w_lc; oc_d0 = w_ld; oc_f0 = 0xFF;
+            os_a0 = w_sa; os_b0 = w_sb; os_c0 = w_sc; os_d0 = w_sd; os_f0 = 0xFF;
+        }
+        OCT_VAL(oc, 0, 4, k);
+        OCT_VAL(os, 0, 4, w_ls);
     }
-    k = oct_val(&o_c, xl & 15, yl & 15, 4);
-    oct_find(&o_s, kx, ky);   /* same slot, already filled */
-    w_ls = oct_val(&o_s, xl & 15, yl & 15, 4);
-    kx = lx >> 3;
-    ky = ly >> 3;
-    if (oct_find(&o_m, kx, ky)) oct_fill(&o_m, kx, ky, SALT_M);
-    w_lm = oct_val(&o_m, xl & 7, yl & 7, 3);
-    kx = lx >> 2;
-    ky = ly >> 2;
-    if (oct_find(&o_e, kx, ky)) oct_fill(&o_e, kx, ky, SALT_E);
-    c = oct_val(&o_e, xl & 3, yl & 3, 2);
+    okx = lx >> 3;
+    oky = ly >> 3;
+    ofx = xl & 7;
+    ofy = yl & 7;
+    OCT(om, SALT_M, 3, w_lm);
+    okx = lx >> 2;
+    oky = ly >> 2;
+    ofx = xl & 3;
+    ofy = yl & 3;
+    OCT(oe, SALT_E, 2, c);
     k = (uint8_t)(HV(k) + QV(c) + (c >> 3));
     w_salt = SALT_F;
     w_le = (uint8_t)(k + (w_hash(lx, ly) >> 3));
