@@ -26,7 +26,7 @@ static unsigned long w_total, w_bad_reg, w_bad_nrx4, w_bad_wave, w_bad_52, w_ch3
 static unsigned long w_music_on_owned, w_sfx_outside, w_sfx_wave;
 static unsigned long w_dac_off, w_nr51, w_nr50_jump, w_nr32_jump, w_env_up;
 static unsigned long trig[4], trig_music[4], wave_loads;
-static unsigned long tick_writes, max_tick_writes, sum_tick_writes, n_ticks;
+static unsigned long tick_writes, max_tick_writes, sum_tick_writes, n_ticks, nr32_tick = ~0ul;
 static uint8_t sfx_mask_now;
 static uint8_t ch3_playing, ch3_stopping;  /* stopping: length set to expire (gone by next tick) */
 static int in_init;
@@ -70,6 +70,9 @@ static void hook(uint8_t r, uint8_t v)
             w_nr51++;                           /* re-routing: a pop */
         if ((r == 0x12 || r == 0x17 || r == 0x21) && (v & 0x08))
             w_env_up++;                         /* rising envelope: zombie-mode click on a live channel */
+        if (((r == 0x14 && (host_snd_regs[0x12] & 0xF0)) || (r == 0x19 && (host_snd_regs[0x17] & 0xF0))) &&
+            (v & 0x80) && !(host_snd_regs[r == 0x14 ? 0x12 : 0x17] & 7))
+            w_env_up++;                         /* a pulse held at a level: nothing fades it */
     }
     if (r == 0x1A && !(v & 0x80))
         ch3_playing = ch3_stopping = 0;
@@ -131,8 +134,9 @@ static void hook_outer(uint8_t r, uint8_t v)
         }
         if (r == 0x1C) {
             int d = nr32_level(v) - nr32_level(prev_regs[0x1C]);
-            if (d > 1 || d < -1)
-                w_nr32_jump++;
+            if (d > 1 || d < -1 || (nr32_tick == n_ticks && d))
+                w_nr32_jump++;                  /* (two steps in one frame are a jump too) */
+            nr32_tick = n_ticks;
         }
     }
     if (r < 0x40)
@@ -336,7 +340,7 @@ static void test_modes(void)
     CHECK(host_snd_regs[0x24] == 0x66, "mute ramps NR50 (%02x)", host_snd_regs[0x24]);
     ticks(40);
     CHECK(host_snd_regs[0x24] == 0 && host_snd_regs[0x1C] == 0, "mute: NR50 down, drone faded");
-    CHECK(host_snd_regs[0x12] == 0x11 && host_snd_regs[0x17] == 0x11, "mute: pulses faded");
+    CHECK((host_snd_regs[0x12] & 7) && (host_snd_regs[0x17] & 7), "mute: pulses left falling");
     CHECK(host_snd_regs[0x25] == 0xFF, "mute keeps NR51");
     CHECK(!ch4_held, "mute: wind let go");
     reset_stats();
@@ -492,8 +496,8 @@ static void test_sfx(void)
                 CHECK(host_snd_regs[0x10] == 0, "%s: sweep cleared", what);
             check_clean(what);
             if (bg == 0) {
-                CHECK(host_snd_regs[0x12] == 0x11 || !(sfx_mask_now & 1), "%s: CH1 fades after", what);
-                CHECK(host_snd_regs[0x17] == 0x11 || !(sfx_mask_now & 2), "%s: CH2 fades after", what);
+                CHECK(((host_snd_regs[0x12] & 7) && !(host_snd_regs[0x12] & 8)) || !(sfx_mask_now & 1), "%s: CH1 left falling", what);
+                CHECK(((host_snd_regs[0x17] & 7) && !(host_snd_regs[0x17] & 8)) || !(sfx_mask_now & 2), "%s: CH2 left falling", what);
                 CHECK(!ch4_held || !(sfx_mask_now & 8), "%s: CH4 fades after", what);
             } else {
                 unsigned long t3 = trig_music[3], t0 = trig_music[0];

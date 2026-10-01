@@ -33,7 +33,7 @@
  * 0, so anything that moves that offset without a note clicks: switching a DAC on or off
  * (NRx2 = 0 / NR30 = 0), re-routing a channel in NR51, jumping NR50, and big steps of the
  * CH3 volume code.  So: every DAC is switched on once in snd_core_init() and stays on
- * (silence is a fast hardware fade to volume 0, never DAC off); NR51 is written once and
+ * (silence is a falling envelope running out, never DAC off); NR51 is written once and
  * never changes (NR50 = 0 is the lowest gain, not silence: a mute ramps NR50 down and fades
  * every channel instead); NR50 moves one step per frame; NR32 one step at a time.
  * And every envelope runs downwards: writing NRx2 with the other direction to a playing
@@ -95,9 +95,7 @@ BANKREF(sound_core)
 /* wind flags */
 #define WF_WAVES  0x01
 
-/* silence with the DAC kept on: written without a trigger, it only changes the envelope pace
-   of a playing channel, which then fades to 0 in under 1/64 s (same direction: no zombie
-   glitch); a stopped channel just stores it */
+/* DAC on, volume 0 for a stopped channel (written at init, when every channel is stopped) */
 #define ENV_FADE 0x11
 
 /* ------------------------------------------------------------------ biome tables */
@@ -207,7 +205,7 @@ static uint8_t eq_n[8], eq_v[8], eq_due[8], eq_pace[8], eq_duty[8];
 static uint8_t eq_h, eq_t;
 
 /* drone */
-static uint8_t d_on, d_wave, d_note, d_code, d_st, d_t, d_tw, d_tn, d_tl, d_last, d_olv;
+static uint8_t d_on, d_wave, d_note, d_code, d_st, d_t, d_tw, d_tn, d_tl, d_last, d_olv, d_wrote;
 /* breathing: in the world the drone swells for 5-10 s, sinks one step (to 25%) for 2-4 s, and
    swells back, and it walks between degrees.  An unbroken tone that never changes is what a
    crashed Game Boy sounds like; a fade to silence and back is four pops (see the top). */
@@ -283,9 +281,10 @@ static void drone_out(void)
     else if ((uint8_t)(c + 1) < d_olv)
         c = (uint8_t)(d_olv - 1);
     v = nr32_tab[c];
-    if (v != d_last && d_on) {
+    if (v != d_last && d_on && !d_wrote) {  /* one step per tick: two in one frame is a jump */
         d_last = v;
         d_olv = c;
+        d_wrote = 1;
         SND_W(SND_NR32, v);
     }
 }
@@ -411,9 +410,10 @@ static void drone_frame(void)
         return;
     switch (d_st) {
     case DS_DOWN:
-        if (d_on && (uint8_t)(d_code + datt[att]) < 4) {
-            d_code++;
-            drone_out();
+        if (d_on && ((uint8_t)(d_code + datt[att]) < 4 || d_olv < 4)) {
+            if ((uint8_t)(d_code + datt[att]) < 4)
+                d_code++;
+            drone_out();                    /* (until the output itself is at 0%) */
             d_t = 12;
         } else {
             if (d_on)
@@ -583,23 +583,12 @@ static void echo_frame(void)
     echo_push(eq_n[i], v, eq_pace[i], eq_duty[i]);   /* feedback */
 }
 
-/* fade to 0 with the DAC kept on (NRx2 = 0 would switch the DAC off: a pop) */
-static void ch1_silence(void)
-{
-    SND_W(SND_NR12, ENV_FADE);
-}
-
-static void ch2_silence(void)
-{
-    SND_W(SND_NR22, ENV_FADE);
-}
-
+/* The pulses are never silenced by a register write: every note (music and sfx) is triggered
+   with a falling envelope, so it dies away by itself within a second.  NRx2 = 0 would switch
+   the DAC off (a pop), and rewriting NRx2 on a playing channel bumps its volume (zombie
+   mode), so silencing only drops what is queued. */
 static void silence_pulses(void)
 {
-    if (!(snd_owned & 1))
-        ch1_silence();
-    if (!(snd_owned & 2))
-        ch2_silence();
     eq_h = eq_t = 0;
     pn_t = 0;
 }
@@ -1054,12 +1043,8 @@ static uint8_t vo_n42;                   /* the last NR42 an sfx script wrote */
 static void release(uint8_t m, uint8_t early)
 {
     snd_owned &= (uint8_t)~m;
-    if (m & 1) {
-        SND_W(SND_NR10, 0x00);
-        ch1_silence();
-    }
-    if (m & 2)
-        ch2_silence();
+    if (m & 1)
+        SND_W(SND_NR10, 0x00);              /* sweep off; the note fades by itself */
     if (m & 8) {
         if (early && (vo_n42 & 0xF0) && !(vo_n42 & 7)) {
             SND_W(SND_NR42, (uint8_t)((vo_n42 & 0xF0) | 1));   /* falling from where it is */
@@ -1243,8 +1228,7 @@ void snd_core_tick(void)
         wind_out();
     }
     nr50_frame();
-    if (d_on && !(fc & 7))
-        drone_out();                        /* mute / unmute: the drone follows a step at a time */
+    d_wrote = 0;
     r = snd_req_fast;
     if (r != fast) {
         fast = r;
@@ -1291,6 +1275,8 @@ void snd_core_tick(void)
         wind_frame();
     if (mf_rate)
         master_frame();
+    if (d_on)
+        drone_out();                        /* catch up a step held back this tick, or a mute */
 
     /* ---- sfx ---- */
     if (vo_p[0])
