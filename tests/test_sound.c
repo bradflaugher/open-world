@@ -175,7 +175,7 @@ static void tick(void)
 {
     tick_writes = 0;
     if (ch3_stopping)                           /* the length counter ran out (1/256 s) */
-        ch3_playing = ch3_stopping = ch4_held = 0;
+        ch3_playing = ch3_stopping = 0;
     sound_tick();
     if (tick_writes > max_tick_writes)
         max_tick_writes = tick_writes;
@@ -193,7 +193,7 @@ static void fresh(void)
 {
     memset(host_snd_regs, 0, sizeof host_snd_regs);
     memset(prev_regs, 0, sizeof prev_regs);
-    ch3_playing = ch3_stopping = 0;
+    ch3_playing = ch3_stopping = ch4_held = 0;
     in_init = 1;
     sound_init();
     in_init = 0;
@@ -571,6 +571,15 @@ static void test_sfx(void)
     }
     sfx_mask_now = 0;
     check_clean("priorities");
+    /* a held noise level cut short (mute mid-glide) is let go, not left hissing */
+    sfx_play(SFX_GLIDE);
+    ticks(3);
+    CHECK(ch4_held, "glide holds a noise level");
+    sound_mute_all(1);
+    ticks(40);
+    CHECK(!ch4_held && sound_debug_owned() == 0, "mute mid-glide lets CH4 go");
+    sound_mute_all(0);
+    ticks(10);
     sfx_play(NUM_SFX);
     sfx_play(255);
     CHECK(!sfx_playing(), "invalid sfx ignored");

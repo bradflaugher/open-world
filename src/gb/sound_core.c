@@ -1047,7 +1047,11 @@ static void master_frame(void)
 }
 
 /* ------------------------------------------------------------------ sfx */
-static void release(uint8_t m)
+static uint8_t vo_n42;                   /* the last NR42 an sfx script wrote */
+
+/* hand channels back.  A script that ran to its end left them fading (gen_music.py checks);
+   one cut short may be holding a noise level (pace 0), which only a trigger releases. */
+static void release(uint8_t m, uint8_t early)
 {
     snd_owned &= (uint8_t)~m;
     if (m & 1) {
@@ -1057,18 +1061,22 @@ static void release(uint8_t m)
     if (m & 2)
         ch2_silence();
     if (m & 8) {
+        if (early && (vo_n42 & 0xF0) && !(vo_n42 & 7)) {
+            SND_W(SND_NR42, (uint8_t)((vo_n42 & 0xF0) | 1));   /* falling from where it is */
+            SND_W(SND_NR44, 0x80);
+        }
         w_lvl = 0;                          /* the wind swells back from silence; every sfx */
         w_tmr = 1;                          /* ends on a falling envelope (gen_music.py checks) */
         w_out = 0;
     }
 }
 
-static void voice_stop(uint8_t i, uint8_t keep)
+static void voice_stop(uint8_t i, uint8_t keep, uint8_t early)
 {
     uint8_t m = (uint8_t)(vo_mask[i] & ~keep);
     vo_p[i] = 0;
     snd_vo_on &= (uint8_t)~(i + 1);
-    release(m);
+    release(m, early);
 }
 
 static void sfx_start(uint8_t id)
@@ -1081,14 +1089,14 @@ static void sfx_start(uint8_t id)
             return;                         /* busy with something more important */
     for (i = 0; i < 2; i++)
         if (vo_p[i] && (vo_mask[i] & m))
-            voice_stop(i, m);
+            voice_stop(i, m, 1);
     i = 0;
     if (vo_p[0]) {
         i = 1;
         if (vo_p[1]) {
             if (vo_prio[0] <= vo_prio[1])
                 i = 0;
-            voice_stop(i, 0);
+            voice_stop(i, 0, 1);
         }
     }
     if (id <= SFX_STEP_STONE)
@@ -1122,9 +1130,11 @@ static void voice_run(uint8_t i)
         }
         if (!b) {
             SND_SRC(SND_SRC_MUSIC);
-            voice_stop(i, 0);
+            voice_stop(i, 0, 0);
             return;
         }
+        if (b == SND_NR42)
+            vo_n42 = *vp;
         SND_W(b, *vp);
         vp++;
     }
@@ -1225,9 +1235,9 @@ void snd_core_tick(void)
         muted = r;                          /* NR51 stays: everything fades instead */
         if (r) {
             if (vo_p[0])
-                voice_stop(0, 0);
+                voice_stop(0, 0, 1);
             if (vo_p[1])
-                voice_stop(1, 0);
+                voice_stop(1, 0, 1);
             silence_pulses();
         }
         wind_out();
