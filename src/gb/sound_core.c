@@ -453,9 +453,10 @@ static void wind_out(void)
         return;
     l = (w_on && !muted) ? atten(w_lvl) : 0;
     if (!l) {
-        if (w_out) {
+        if (w_out) {                        /* fade out in hardware from where it is */
+            SND_W(SND_NR42, (uint8_t)((w_out << 4) | 1));   /* falling: no zombie glitch */
+            SND_W(SND_NR44, 0x80);          /* (a held level only lets go on a trigger) */
             w_out = 0;
-            SND_W(SND_NR42, ENV_FADE);      /* fades out by itself, DAC kept on */
         }
         return;
     }
@@ -1056,10 +1057,9 @@ static void release(uint8_t m)
     if (m & 2)
         ch2_silence();
     if (m & 8) {
-        w_lvl = 0;                          /* the wind swells back from silence */
-        w_tmr = 1;
-        w_out = 0xFF;
-        wind_out();
+        w_lvl = 0;                          /* the wind swells back from silence; every sfx */
+        w_tmr = 1;                          /* ends on a falling envelope (gen_music.py checks) */
+        w_out = 0;
     }
 }
 
@@ -1230,7 +1230,6 @@ void snd_core_tick(void)
                 voice_stop(1, 0);
             silence_pulses();
         }
-        w_out = 0xFF;
         wind_out();
     }
     nr50_frame();

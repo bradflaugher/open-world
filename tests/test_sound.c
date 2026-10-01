@@ -30,6 +30,7 @@ static unsigned long tick_writes, max_tick_writes, sum_tick_writes, n_ticks;
 static uint8_t sfx_mask_now;
 static uint8_t ch3_playing, ch3_stopping;  /* stopping: length set to expire (gone by next tick) */
 static int in_init;
+static uint8_t ch4_held;                    /* CH4 triggered at a level its envelope never leaves */
 static uint32_t log_hash;
 static uint16_t ch1_freq_seen[2048 / 16];
 
@@ -80,6 +81,8 @@ static void hook(uint8_t r, uint8_t v)
         ch3_playing = 1;
         ch3_stopping = 0;
     }
+    if (r == 0x23 && (v & 0x80))
+        ch4_held = (host_snd_regs[0x21] >> 4) && !(host_snd_regs[0x21] & 7) && !(v & 0x40);
     if (r == 0x26 && v != 0x80 && !in_init)
         w_bad_52++;
     if (c >= 0) {
@@ -172,7 +175,7 @@ static void tick(void)
 {
     tick_writes = 0;
     if (ch3_stopping)                           /* the length counter ran out (1/256 s) */
-        ch3_playing = ch3_stopping = 0;
+        ch3_playing = ch3_stopping = ch4_held = 0;
     sound_tick();
     if (tick_writes > max_tick_writes)
         max_tick_writes = tick_writes;
@@ -335,6 +338,7 @@ static void test_modes(void)
     CHECK(host_snd_regs[0x24] == 0 && host_snd_regs[0x1C] == 0, "mute: NR50 down, drone faded");
     CHECK(host_snd_regs[0x12] == 0x11 && host_snd_regs[0x17] == 0x11, "mute: pulses faded");
     CHECK(host_snd_regs[0x25] == 0xFF, "mute keeps NR51");
+    CHECK(!ch4_held, "mute: wind let go");
     reset_stats();
     sfx_play(SFX_SELECT);
     ticks(300);
@@ -390,7 +394,7 @@ static void test_transitions(void)
     CHECK(sound_debug_mode() == AMB_TITLE, "retargeted fade ends in TITLE");
     ambient_mode(AMB_SILENT);
     ticks(120);
-    CHECK(host_snd_regs[0x1C] == 0 && host_snd_regs[0x21] == 0x11, "SILENT: drone + wind faded (DACs stay on)");
+    CHECK(host_snd_regs[0x1C] == 0 && !ch4_held, "SILENT: drone + wind faded (DACs stay on)");
     {
         unsigned long before = w_total;
         ticks(300);
@@ -490,7 +494,7 @@ static void test_sfx(void)
             if (bg == 0) {
                 CHECK(host_snd_regs[0x12] == 0x11 || !(sfx_mask_now & 1), "%s: CH1 fades after", what);
                 CHECK(host_snd_regs[0x17] == 0x11 || !(sfx_mask_now & 2), "%s: CH2 fades after", what);
-                CHECK(host_snd_regs[0x21] == 0x11 || !(sfx_mask_now & 8), "%s: CH4 fades after", what);
+                CHECK(!ch4_held || !(sfx_mask_now & 8), "%s: CH4 fades after", what);
             } else {
                 unsigned long t3 = trig_music[3], t0 = trig_music[0];
                 if ((sfx_mask_now & 8) && bg == 1) {
@@ -498,7 +502,7 @@ static void test_sfx(void)
                     int k, back = 0;
                     for (k = 0; k < 120 && !back; k++) {
                         tick();
-                        back = (host_snd_regs[0x21] >> 4) != 0 && host_snd_regs[0x21] != 0x11;
+                        back = ch4_held;
                     }
                     CHECK(back, "%s: rain back within 2 s", what);
                 }
