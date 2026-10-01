@@ -208,7 +208,8 @@ A generative ambient engine:
 **No pops.** On real hardware a channel whose DAC is on sits at full DC offset even at volume 0,
 so switching a DAC off or on, re-routing a channel in NR51, jumping NR50, a big step of the CH3
 volume code, or writing a rising envelope to a playing channel ("zombie mode") all click. The
-engine switches every DAC on once at boot and never off, keeps NR51 fixed (no per-note panning),
+engine switches every DAC on once at boot and never off, never changes NR51 (no per-note panning;
+a mute fades every channel instead),
 ramps NR50 a step per frame, moves NR32 a step at a time, and only uses falling envelopes.
 PyBoy doesn't emulate any of this, so `tests/test_sound.c` checks the register stream for it.
 

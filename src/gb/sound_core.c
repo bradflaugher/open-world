@@ -33,8 +33,9 @@
  * 0, so anything that moves that offset without a note clicks: switching a DAC on or off
  * (NRx2 = 0 / NR30 = 0), re-routing a channel in NR51, jumping NR50, and big steps of the
  * CH3 volume code.  So: every DAC is switched on once in snd_core_init() and stays on
- * (silence is a fast hardware fade to volume 0, never DAC off); NR51 is fixed (only a mute
- * changes it, at master volume 0); NR50 moves one step per frame; NR32 one step at a time.
+ * (silence is a fast hardware fade to volume 0, never DAC off); NR51 is written once and
+ * never changes (NR50 = 0 is the lowest gain, not silence: a mute ramps NR50 down and fades
+ * every channel instead); NR50 moves one step per frame; NR32 one step at a time.
  * And every envelope runs downwards: writing NRx2 with the other direction to a playing
  * channel ("zombie mode") throws its volume to 14-15 until the trigger, a sharp click.
  * PyBoy does not model any of this (it mixes digital volume), so tests/test_sound.c checks
@@ -186,7 +187,7 @@ uint8_t snd_cur_mode, snd_xf, snd_xf_next, snd_owned, snd_vo_on;
 static uint8_t xf_t, att;
 static uint8_t lay, muffle, muted, fast;
 static uint8_t m_lvl, mf_rate, mf_t;      /* master level (NR50 target), master fade */
-static uint8_t nr51_last, n50;            /* n50: the level NR50 is at (ramps to m_lvl) */
+static uint8_t n50;                       /* the level NR50 is at (ramps to m_lvl) */
 static uint16_t rng, wrng;
 
 /* committed world params */
@@ -206,7 +207,7 @@ static uint8_t eq_n[8], eq_v[8], eq_due[8], eq_pace[8], eq_duty[8];
 static uint8_t eq_h, eq_t;
 
 /* drone */
-static uint8_t d_on, d_wave, d_note, d_code, d_st, d_t, d_tw, d_tn, d_tl, d_last;
+static uint8_t d_on, d_wave, d_note, d_code, d_st, d_t, d_tw, d_tn, d_tl, d_last, d_olv;
 /* breathing: in the world the drone swells for 5-10 s, sinks one step (to 25%) for 2-4 s, and
    swells back, and it walks between degrees.  An unbroken tone that never changes is what a
    crashed Game Boy sounds like; a fade to silence and back is four pops (see the top). */
@@ -256,18 +257,6 @@ static uint8_t atten(uint8_t v)
     }
 }
 
-/* NR51 is fixed: every channel on both sides.  Re-routing a channel moves its DC offset from
-   one side to the other (a pop), so per-note panning is gone; a mute only cuts the routing
-   once NR50 has ramped down to its lowest step. */
-static void nr51_update(void)
-{
-    uint8_t v = (muted && !n50) ? 0x00 : 0xFF;
-    if (v != nr51_last) {
-        nr51_last = v;
-        SND_W(SND_NR51, v);
-    }
-}
-
 /* NR50 follows m_lvl (0 when muted) one step per frame */
 static void nr50_frame(void)
 {
@@ -279,19 +268,24 @@ static void nr50_frame(void)
     else
         n50--;
     SND_W(SND_NR50, (uint8_t)(n50 | (n50 << 4)));
-    nr51_update();
 }
 
 /* ------------------------------------------------------------------ drone (CH3) */
+/* write the drone level (d_code, attenuated; 0% while muted), one NR32 step per call */
 static void drone_out(void)
 {
     uint8_t c = (uint8_t)(d_code + datt[att]);
     uint8_t v;
-    if (c > 4)
+    if (c > 4 || muted)
         c = 4;
+    if (c > (uint8_t)(d_olv + 1))
+        c = (uint8_t)(d_olv + 1);
+    else if ((uint8_t)(c + 1) < d_olv)
+        c = (uint8_t)(d_olv - 1);
     v = nr32_tab[c];
     if (v != d_last && d_on) {
         d_last = v;
+        d_olv = c;
         SND_W(SND_NR32, v);
     }
 }
@@ -302,6 +296,7 @@ static void drone_stop(void)
 {
     SND_W(SND_NR32, 0x00);
     d_last = 0x00;
+    d_olv = 4;
     SND_W(SND_NR31, 0xFF);
     SND_W(SND_NR34, 0x40);                  /* length on, no trigger */
     d_on = 0;
@@ -318,6 +313,7 @@ static void drone_load(void)
     SND_W(SND_NR31, 0x00);
     SND_W(SND_NR32, 0x00);                  /* start at 0%: the fade-in brings it up */
     d_last = 0x00;
+    d_olv = 4;
     SND_W(SND_NR33, (uint8_t)f);
     SND_W(SND_NR34, (uint8_t)(0x80 | (f >> 8)));   /* trigger once; length off */
     d_on = 1;
@@ -455,7 +451,7 @@ static void wind_out(void)
     uint8_t l, col;
     if (snd_owned & 8)
         return;
-    l = w_on ? atten(w_lvl) : 0;
+    l = (w_on && !muted) ? atten(w_lvl) : 0;
     if (!l) {
         if (w_out) {
             w_out = 0;
@@ -557,7 +553,7 @@ static void ch1_note(uint8_t n, uint8_t v, uint8_t pace, uint8_t duty)
 {
     uint16_t f;
     v = atten(v);
-    if (!v || muffle || (snd_owned & 1))
+    if (!v || muffle || muted || (snd_owned & 1))
         return;                             /* the map: the melody holds its breath */
     f = snd_freq[n];
     SND_W(SND_NR11, duty);
@@ -576,7 +572,7 @@ static void echo_frame(void)
         return;                             /* head not due yet */
     eq_t = (uint8_t)((i + 1) & 7);
     v = eq_v[i];
-    if (!(snd_owned & 2)) {
+    if (!(snd_owned & 2) && !muted) {
         f = snd_freq[eq_n[i]];              /* in tune: a detune of one step is ~30 cents up high */
         SND_W(SND_NR21, eq_duty[i]);
         SND_W(SND_NR22, (uint8_t)((v << 4) | eq_pace[i]));
@@ -1151,7 +1147,6 @@ void snd_core_init(void)
     SND_W(SND_NR30, 0x80);
     SND_W(SND_NR42, ENV_FADE);
     n50 = 7;
-    nr51_last = 0xFF;
     snd_req_mode = REQ_NONE;
     snd_req_mute = 0;
     snd_req_fast = 0;
@@ -1198,6 +1193,7 @@ void snd_core_init(void)
     d_st = DS_IDLE;
     d_code = 4;
     d_last = 0xFF;
+    d_olv = 4;
     d_wave = 0xFF;
     d_br = 0;
     d_blv = 4;
@@ -1226,10 +1222,20 @@ void snd_core_tick(void)
     }
     r = snd_req_mute;
     if (r != muted) {
-        muted = r;
-        nr51_update();                      /* unmute: route first, then ramp up */
+        muted = r;                          /* NR51 stays: everything fades instead */
+        if (r) {
+            if (vo_p[0])
+                voice_stop(0, 0);
+            if (vo_p[1])
+                voice_stop(1, 0);
+            silence_pulses();
+        }
+        w_out = 0xFF;
+        wind_out();
     }
     nr50_frame();
+    if (d_on && !(fc & 7))
+        drone_out();                        /* mute / unmute: the drone follows a step at a time */
     r = snd_req_fast;
     if (r != fast) {
         fast = r;
@@ -1254,7 +1260,9 @@ void snd_core_tick(void)
     }
     /* one sfx start per frame, and not on a music step (a frame later is inaudible): a
        burst of requests never lands on a single tick */
-    if (snd_rq_tail != snd_rq_head && !r) {
+    if (muted)
+        snd_rq_tail = snd_rq_head;          /* no sfx while muted */
+    else if (snd_rq_tail != snd_rq_head && !r) {
         sfx_start(snd_rq[snd_rq_tail]);
         snd_rq_tail = (uint8_t)((snd_rq_tail + 1) & 3);
     }

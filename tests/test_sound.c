@@ -326,20 +326,26 @@ static void test_modes(void)
     ticks(600);
     CHECK(trig_music[0] > 0, "WORLD brings the melody back (%lu)", trig_music[0]);
     check_clean("map");
-    /* mute: NR50 ramps down a step a frame, then the routing is cut */
+    /* mute: NR50 ramps down a step a frame and every channel fades; NR51 never changes
+       (NR50 = 0 is the lowest gain, not silence) */
     sound_mute_all(1);
     tick();
-    CHECK(host_snd_regs[0x25] == 0xFF && host_snd_regs[0x24] == 0x66, "mute ramps first (%02x %02x)",
-          host_snd_regs[0x25], host_snd_regs[0x24]);
-    ticks(10);
-    CHECK(host_snd_regs[0x25] == 0 && host_snd_regs[0x24] == 0, "mute: NR51 = 0");
-    ticks(100);
-    CHECK(host_snd_regs[0x25] == 0, "mute holds while music runs");
+    CHECK(host_snd_regs[0x24] == 0x66, "mute ramps NR50 (%02x)", host_snd_regs[0x24]);
+    ticks(40);
+    CHECK(host_snd_regs[0x24] == 0 && host_snd_regs[0x1C] == 0, "mute: NR50 down, drone faded");
+    CHECK(host_snd_regs[0x12] == 0x11 && host_snd_regs[0x17] == 0x11, "mute: pulses faded");
+    CHECK(host_snd_regs[0x25] == 0xFF, "mute keeps NR51");
+    reset_stats();
+    sfx_play(SFX_SELECT);
+    ticks(300);
+    CHECK(trig[0] == 0 && trig[1] == 0 && trig[3] == 0, "mute holds while music runs (%lu %lu %lu)", trig[0], trig[1], trig[3]);
+    CHECK(!sfx_playing(), "mute drops sfx");
     sound_mute_all(0);
-    tick();
-    CHECK(host_snd_regs[0x25] == 0xFF, "unmute restores NR51");
-    ticks(10);
-    CHECK(host_snd_regs[0x24] == 0x77, "unmute ramps NR50 back (%02x)", host_snd_regs[0x24]);
+    ticks(60);
+    CHECK(host_snd_regs[0x24] == 0x77 && host_snd_regs[0x1C] != 0, "unmute ramps NR50 + drone back (%02x)", host_snd_regs[0x24]);
+    ticks(600);
+    CHECK(trig_music[0] > 0, "unmute: music resumes");
+    check_clean("mute");
     CHECK(w_nr50_jump == 0, "mute: NR50 never jumps");
 }
 
