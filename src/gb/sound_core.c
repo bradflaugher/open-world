@@ -3,29 +3,43 @@
  *
  * Music is not a song but a small ecology, after Eno's tape-loop pieces:
  *
- *   CH3 wave   drone pad: one 32-sample wavetable per biome, a root that now and then leans
- *              to a neighbouring degree (4th / 5th / b7 / b6 / tritone...).  Wave RAM is
- *              only rewritten with the DAC off (NR30 = 0), after the drone has faded to 0%.
+ *   CH3 wave   drone pad: one 32-sample wavetable per biome, a root that now and then walks
+ *              to a neighbouring degree (4th / 5th / b7), and breathes between 50% and 25%.
+ *              Wave RAM is only rewritten while the channel is stopped (faded to 0%, then
+ *              halted by its length counter; the DAC stays on).
  *   CH1 pulse  "tape loops": 6 generative loops of unequal prime lengths (17..71 steps) each
  *              carrying one note of the biome's 8-note modal pool, plus a night "star" loop
  *              and three beacon loops (one per lit beacon: D5, A5, E6 - an open sus chord).
  *              Loops phase against each other, so the music never repeats exactly; notes are
  *              re-picked slowly from an xorshift RNG seeded by ambient_seed ^ biome.
- *   CH2 pulse  ping-pong feedback echo of CH1 (dotted step delay, slightly detuned, the
- *              other stereo side, each tap quieter).
- *   CH4 noise  wind: a software envelope (retrigger per level step) with random gusts;
- *              regular surf on the coast; rain = dense jittering hiss; storm = heavy rain
- *              with slow low rumbles.
+ *              Every pool is pentatonic or suspended: no semitones, no tritones.
+ *   CH2 pulse  feedback echo of CH1 (dotted step delay, each tap quieter).
+ *   CH4 noise  wind: a software envelope (retrigger per level step) with rare soft gusts and
+ *              silence between them; slow surf on the coast; rain = a soft steady shower;
+ *              storm = rain with low rumbling gusts.  Footsteps borrow it; the wind then
+ *              swells back from silence.
  *
  *   Time of day: dawn = rising two-note cells, day = fullest, dusk = falling cells and
  *   thinner, night = slower, lower, two loops + stars; the drone drops an octave.
  *   Changes from ambient_set() are applied at the next phrase boundary (16 steps); drone
- *   changes dip / fade the drone first.  Mode changes crossfade via a global attenuation.
+ *   changes swap the wave only after a fade.  Mode changes crossfade via a global attenuation.
  *
  * SFX: register scripts (tools/gen_music.py -> sound_data.h) on two voices with priorities.
  * An sfx owns the channels in its mask (never CH3); the ambient keeps its state for an owned
  * channel but does not touch the hardware; on release the channel is silenced (CH1/CH2,
- * picked up by the next note) or the wind is restored at its current level (CH4).
+ * picked up by the next note) or the wind swells back from silence (CH4).
+ *
+ * No pops.  On the hardware a channel whose DAC is on sits at full DC offset even at volume
+ * 0, so anything that moves that offset without a note clicks: switching a DAC on or off
+ * (NRx2 = 0 / NR30 = 0), re-routing a channel in NR51, jumping NR50, and big steps of the
+ * CH3 volume code.  So: every DAC is switched on once in snd_core_init() and stays on
+ * (silence is a falling envelope running out, never DAC off); NR51 is written once and
+ * never changes (NR50 = 0 is the lowest gain, not silence: a mute ramps NR50 down and fades
+ * every channel instead); NR50 moves one step per frame; NR32 one step at a time.
+ * And every envelope runs downwards: writing NRx2 with the other direction to a playing
+ * channel ("zombie mode") throws its volume to 14-15 until the trigger, a sharp click.
+ * PyBoy does not model any of this (it mixes digital volume), so tests/test_sound.c checks
+ * the register stream for it instead.
  *
  * Every public function only posts a request; all register work happens in sound_tick()
  * (VBL, once per frame).  Hot path: static uint8_t state, no multiply / divide.
@@ -68,10 +82,9 @@ BANKREF(sound_core)
 
 /* drone state */
 #define DS_IDLE  0
-#define DS_DOWN  1
-#define DS_SLIDE 2
-#define DS_DIP   3
-#define DS_DIP2  4
+#define DS_DOWN  1                  /* fade to 0%, then stop the channel (new wave) */
+#define DS_SLIDE 2                  /* step the level towards d_tl */
+#define DS_LOAD  3                  /* channel stopped: write wave RAM and trigger */
 
 /* cells */
 #define CELL_ONE  0
@@ -81,12 +94,9 @@ BANKREF(sound_core)
 
 /* wind flags */
 #define WF_WAVES  0x01
-#define WF_JITTER 0x02
 
-/* pan bits in CH1 position (NR51 bit4 = L, bit0 = R) */
-#define PAN_C 0x11
-#define PAN_L 0x10
-#define PAN_R 0x01
+/* DAC on, volume 0 for a stopped channel (written at init, when every channel is stopped) */
+#define ENV_FADE 0x11
 
 /* ------------------------------------------------------------------ biome tables */
 /* 8-note pools, ascending, as snd_freq indices (N_D4 + semitones) */
@@ -95,13 +105,13 @@ static const uint8_t b_pool[B_COUNT][8] = {
     { P(-5), P(0), P(5), P(7), P(10), P(12), P(17), P(19) },   /* SEA     suspended 4ths  */
     { P(-5), P(0), P(5), P(7), P(12), P(14), P(17), P(19) },   /* SHALLOW                 */
     { P(-5), P(0), P(2), P(5), P(7), P(12), P(14), P(19) },    /* SHORE                   */
-    { P(0), P(2), P(4), P(7), P(9), P(12), P(16), P(18) },     /* MEADOW  pent. + lydian  */
-    { P(-2), P(0), P(3), P(5), P(7), P(9), P(12), P(15) },     /* FOREST  dorian          */
-    { P(0), P(1), P(4), P(7), P(8), P(12), P(13), P(16) },     /* DESERT  phrygian dom.   */
-    { P(12), P(19), P(24), P(26), P(28), P(31), P(33), P(36) },/* TUNDRA  high partials   */
-    { P(-12), P(-10), P(-7), P(-5), P(-2), P(0), P(3), P(7) }, /* ROCK    low             */
-    { P(0), P(2), P(4), P(6), P(8), P(10), P(12), P(18) },     /* ASH     whole tone      */
-    { P(-4), P(0), P(3), P(5), P(7), P(8), P(10), P(12) },     /* RUINS   aeolian         */
+    { P(0), P(2), P(4), P(7), P(9), P(12), P(14), P(16) },     /* MEADOW  major pent.     */
+    { P(-2), P(0), P(2), P(5), P(7), P(10), P(12), P(14) },    /* FOREST  sus pent. (C D E G A) */
+    { P(0), P(3), P(5), P(7), P(10), P(12), P(15), P(17) },    /* DESERT  minor pent.     */
+    { P(0), P(7), P(12), P(14), P(19), P(21), P(24), P(26) },  /* TUNDRA  open 5ths, high */
+    { P(-7), P(-5), P(-2), P(0), P(2), P(5), P(7), P(12) },    /* ROCK    low sus         */
+    { P(0), P(2), P(7), P(9), P(12), P(14), P(19), P(21) },    /* ASH     5ths, no third  */
+    { P(-7), P(-2), P(0), P(3), P(5), P(7), P(10), P(12) },    /* RUINS   minor pent.     */
 };
 /* drone: wave, 4 weighted notes (index; CH3 sounds an octave lower), level code (1=100%..3=25%) */
 static const uint8_t b_wave[B_COUNT] = { WV_SOFT, WV_SOFT, WV_SOFT, WV_WARM, WV_HOLLOW, WV_REED,
@@ -112,36 +122,37 @@ static const uint8_t b_drone[B_COUNT][4] = {
     { P(0), P(0), P(5), P(7) },
     { P(0), P(0), P(7), P(-5) },    /* D  A  A-     */
     { P(0), P(0), P(-2), P(5) },    /* D  C  G      */
-    { P(0), P(0), P(0), P(1) },     /* D  Eb        */
-    { P(-12), P(-12), P(-12), P(-5) }, /* low D + glass partials, A */
+    { P(0), P(0), P(7), P(-2) },    /* D  A  C      */
+    { P(-12), P(-12), P(-12), P(-5) }, /* low D, A  */
     { P(-12), P(-12), P(-5), P(-7) },  /* D2 A2 G2   */
-    { P(0), P(0), P(6), P(0) },     /* D  G# (tritone) */
-    { P(0), P(0), P(-4), P(-2) },   /* D  Bb C      */
+    { P(0), P(0), P(7), P(5) },     /* D  A  G      */
+    { P(0), P(0), P(-2), P(5) },    /* D  C  G      */
 };
 static const uint8_t b_dlev[B_COUNT]  = { 2, 2, 2, 2, 2, 2, 2, 2, 2, 2 };
 static const uint8_t b_pset[B_COUNT]  = { 1, 1, 1, 0, 0, 2, 2, 2, 2, 2 };
 static const uint8_t b_skip[B_COUNT]  = { 96, 88, 80, 72, 88, 100, 96, 72, 72, 128 };
 static const uint8_t b_vol[B_COUNT]   = { 8, 8, 8, 9, 9, 8, 6, 9, 8, 8 };
 static const uint8_t b_pace[B_COUNT]  = { 7, 7, 7, 7, 6, 6, 5, 7, 7, 7 };
-static const uint8_t b_duty[B_COUNT]  = { 0x80, 0x80, 0x80, 0x80, 0x40, 0x40, 0x80, 0x80, 0x40, 0x80 };
-static const uint8_t b_det[B_COUNT]   = { 1, 1, 1, 1, 1, 1, 0, 1, 3, 1 };
+static const uint8_t b_duty[B_COUNT]  = { 0x80, 0x80, 0x80, 0x80, 0x80, 0x40, 0x80, 0x80, 0x80, 0x80 };
 static const uint8_t b_slow[B_COUNT]  = { 4, 4, 3, 0, 1, 2, 2, 1, 2, 3 };
-/* wind: calm, gust, rise, fall, gust probability, calm colour, gust colour, flags */
+/* wind: calm, gust, rise, fall, gust probability, calm colour, gust colour, flags.
+   Calm is 0 (silence) on land: a constant noise floor is what static sounds like.  The
+   colours are dark (shift 5-7): a low whoosh, not a hiss. */
 static const uint8_t b_wind[B_COUNT][8] = {
-    { 1, 4, 22, 34, 255, 0x66, 0x55, WF_WAVES },
-    { 1, 3, 18, 28, 255, 0x56, 0x45, WF_WAVES },
-    { 1, 4, 24, 36, 255, 0x66, 0x54, WF_WAVES },
-    { 1, 3, 14, 18,  90, 0x56, 0x45, 0 },
-    { 1, 2, 12, 12, 120, 0x44, 0x34, 0 },
-    { 1, 4, 16, 20, 110, 0x55, 0x35, 0 },
-    { 2, 5, 12, 16, 150, 0x46, 0x35, 0 },
-    { 1, 4, 14, 20, 100, 0x67, 0x56, 0 },
-    { 1, 2, 20, 20,  60, 0x77, 0x66, 0 },
-    { 1, 3, 18, 22,  70, 0x57, 0x46, 0 },
+    { 0, 3, 22, 34, 255, 0x67, 0x56, WF_WAVES },
+    { 0, 2, 20, 30, 255, 0x67, 0x56, WF_WAVES },
+    { 0, 3, 24, 36, 255, 0x67, 0x56, WF_WAVES },
+    { 0, 2, 16, 22,  70, 0x66, 0x56, 0 },
+    { 0, 2, 14, 18,  80, 0x56, 0x55, 0 },
+    { 0, 3, 16, 22,  90, 0x66, 0x56, 0 },
+    { 0, 3, 12, 18, 120, 0x56, 0x46, 0 },
+    { 0, 3, 14, 20,  90, 0x67, 0x57, 0 },
+    { 0, 2, 20, 22,  60, 0x77, 0x67, 0 },
+    { 0, 2, 18, 22,  60, 0x67, 0x57, 0 },
 };
-static const uint8_t wind_title[8] = { 1, 2, 20, 24, 60, 0x56, 0x45, 0 };
-static const uint8_t wind_rain[8]  = { 2, 3, 3, 3, 20, 0x21, 0x31, WF_JITTER };
-static const uint8_t wind_storm[8] = { 3, 5, 18, 24, 24, 0x31, 0x86, WF_JITTER };
+static const uint8_t wind_title[8] = { 0, 2, 20, 24, 60, 0x66, 0x56, 0 };
+static const uint8_t wind_rain[8]  = { 1, 2, 24, 30, 50, 0x46, 0x45, 0 };
+static const uint8_t wind_storm[8] = { 1, 3, 18, 26, 70, 0x45, 0x76, 0 };
 
 static const uint8_t pset_per[3][6] = {
     { 17, 19, 23, 29, 31, 37 },
@@ -158,11 +169,9 @@ static const uint8_t ph_mask[4] = { 0x1F, 0x3F, 0x0F, 0x03 };
 static const uint8_t ph_vdown[4] = { 1, 0, 1, 2 };
 static const uint8_t ph_cell[4] = { CELL_RISE, CELL_MIX, CELL_FALL, CELL_ONE };
 
-static const uint8_t star_pool[8] = { P(24), P(26), P(31), P(33), P(36), P(31), P(24), P(26) };
+static const uint8_t star_pool[8] = { P(19), P(21), P(24), P(26), P(31), P(24), P(19), P(26) };
 static const uint8_t btone[3] = { P(12), P(19), P(26) };          /* D5 A5 E6 */
-static const uint8_t bpan[3] = { PAN_L, PAN_R, PAN_C };
 static const uint8_t bit8[8] = { 1, 2, 4, 8, 16, 32, 64, 128 };
-static const uint8_t pan_pick[4] = { PAN_C, PAN_L, PAN_R, PAN_C };
 static const uint8_t nr32_tab[5] = { 0x20, 0x20, 0x40, 0x60, 0x00 };
 static const uint8_t datt[5] = { 0, 0, 1, 2, 4 };
 static const uint8_t var3[4] = { 0, 1, 2, 1 };
@@ -175,31 +184,31 @@ static uint8_t fc;                        /* frame counter (wraps) */
 uint8_t snd_cur_mode, snd_xf, snd_xf_next, snd_owned, snd_vo_on;
 static uint8_t xf_t, att;
 static uint8_t lay, muffle, muted, fast;
-static uint8_t m_lvl, mf_rate, mf_t;      /* master level (NR50), master fade */
-static uint8_t nr51_last, nr50_last;
-static uint8_t pan1, pan2;
+static uint8_t m_lvl, mf_rate, mf_t;      /* master level (NR50 target), master fade */
+static uint8_t n50;                       /* the level NR50 is at (ramps to m_lvl) */
 static uint16_t rng, wrng;
 
 /* committed world params */
 static uint8_t c_biome, c_phase, c_wx, c_seeded;
 static const uint8_t *pool;
-static uint8_t g_mask, g_star, g_vol, g_pace, g_duty, g_det, g_skip, g_cell, g_fb, g_night;
+static uint8_t g_mask, g_star, g_vol, g_pace, g_duty, g_skip, g_cell, g_fb, g_night;
 static uint8_t step_len, step_t, step_ctr, echo_d, fired, work;
 static uint8_t bmask;
 
 /* loops */
 static uint8_t lp_cnt[NLOOP], lp_per[NLOOP], lp_pi[6];
 static uint8_t lp_stale, last_pick;
-static uint8_t pn_t, pn_n, pn_v, pn_pan;
+static uint8_t pn_t, pn_n, pn_v;
 
 /* echo queue */
-static uint8_t eq_n[8], eq_v[8], eq_due[8], eq_pan[8], eq_pace[8], eq_duty[8];
+static uint8_t eq_n[8], eq_v[8], eq_due[8], eq_pace[8], eq_duty[8];
 static uint8_t eq_h, eq_t;
 
 /* drone */
-static uint8_t d_on, d_wave, d_note, d_code, d_st, d_t, d_tw, d_tn, d_tl, d_last, d_wob;
-/* breathing: in the world the drone sounds for 5-10 s, fades out, rests 2-4 s, and swells back.
-   An unbroken tone that never changes is what a crashed Game Boy sounds like. */
+static uint8_t d_on, d_wave, d_note, d_code, d_st, d_t, d_tw, d_tn, d_tl, d_last, d_olv, d_wrote;
+/* breathing: in the world the drone swells for 5-10 s, sinks one step (to 25%) for 2-4 s, and
+   swells back, and it walks between degrees.  An unbroken tone that never changes is what a
+   crashed Game Boy sounds like; a fade to silence and back is four pops (see the top). */
 static uint8_t d_br, d_bt, d_blv, d_rng;
 
 /* wind */
@@ -246,105 +255,115 @@ static uint8_t atten(uint8_t v)
     }
 }
 
-static void nr51_update(void)
+/* NR50 follows m_lvl (0 when muted) one step per frame */
+static void nr50_frame(void)
 {
-    uint8_t v = 0;
-    if (!muted) {
-        v = 0xCC;
-        if (snd_owned & 1)
-            v |= 0x11;
-        else if (!muffle)
-            v |= pan1;
-        if (snd_owned & 2)
-            v |= 0x22;
-        else
-            v |= pan2;
-    }
-    if (v != nr51_last) {
-        nr51_last = v;
-        SND_W(SND_NR51, v);
-    }
-}
-
-static void nr50_update(void)
-{
-    uint8_t l = m_lvl;
-    if (muffle && l > 3)
-        l = 3;
-    l = (uint8_t)(l | (l << 4));
-    if (l != nr50_last) {
-        nr50_last = l;
-        SND_W(SND_NR50, l);
-    }
+    uint8_t t = muted ? 0 : m_lvl;
+    if (n50 == t)
+        return;
+    if (n50 < t)
+        n50++;
+    else
+        n50--;
+    SND_W(SND_NR50, (uint8_t)(n50 | (n50 << 4)));
 }
 
 /* ------------------------------------------------------------------ drone (CH3) */
+/* write the drone level (d_code, attenuated; 0% while muted), one NR32 step per call */
 static void drone_out(void)
 {
     uint8_t c = (uint8_t)(d_code + datt[att]);
     uint8_t v;
-    if (c > 4)
+    if (c > 4 || muted)
         c = 4;
+    if (c > (uint8_t)(d_olv + 1))
+        c = (uint8_t)(d_olv + 1);
+    else if ((uint8_t)(c + 1) < d_olv)
+        c = (uint8_t)(d_olv - 1);
     v = nr32_tab[c];
-    if (v != d_last && d_on) {
+    if (v != d_last && d_on && !d_wrote) {  /* one step per tick: two in one frame is a jump */
         d_last = v;
+        d_olv = c;
+        d_wrote = 1;
         SND_W(SND_NR32, v);
     }
 }
 
+/* Stop the (already 0%) channel without touching the DAC: the length counter halts it within
+   1/256 s, after which wave RAM may be written on every model.  DAC off would pop. */
+static void drone_stop(void)
+{
+    SND_W(SND_NR32, 0x00);
+    d_last = 0x00;
+    d_olv = 4;
+    SND_W(SND_NR31, 0xFF);
+    SND_W(SND_NR34, 0x40);                  /* length on, no trigger */
+    d_on = 0;
+}
+
+/* only with the channel stopped (drone_stop() at least a frame ago, or never triggered) */
 static void drone_load(void)
 {
     const uint8_t *s = snd_waves[d_wave];
     uint16_t f = snd_freq[d_note];
     uint8_t i;
-    SND_W(SND_NR30, 0x00);                  /* DAC off before touching wave RAM */
     for (i = 0; i < 16; i++)
         SND_W(SND_WAVE + i, s[i]);
-    SND_W(SND_NR30, 0x80);
     SND_W(SND_NR31, 0x00);
     SND_W(SND_NR32, 0x00);                  /* start at 0%: the fade-in brings it up */
     d_last = 0x00;
+    d_olv = 4;
     SND_W(SND_NR33, (uint8_t)f);
     SND_W(SND_NR34, (uint8_t)(0x80 | (f >> 8)));   /* trigger once; length off */
     d_on = 1;
 }
 
-static void drone_pitch(uint8_t up)
+static void drone_pitch(void)
 {
     uint16_t f = snd_freq[d_note];
-    if (up)
-        f++;
     SND_W(SND_NR33, (uint8_t)f);
     SND_W(SND_NR34, (uint8_t)(f >> 8));      /* no trigger: glitch-free pitch change */
 }
 
+/* fade the drone out (one step at a time; the channel keeps running at 0%) */
 static void drone_kill(void)
 {
-    SND_W(SND_NR30, 0x00);
-    d_on = 0;
-    d_st = DS_IDLE;
-    d_code = 4;
-    d_last = 0xFF;
+    d_br = 0;
+    d_tl = 4;
+    if (d_st == DS_IDLE && d_code != 4) {
+        d_st = DS_SLIDE;
+        d_t = 1;
+    }
 }
 
 static void drone_request(uint8_t w, uint8_t n, uint8_t lvl)
 {
-    if (d_br) {                             /* resting: take the change silently */
-        d_blv = lvl;
-        lvl = 4;
-    }
+    d_blv = lvl;
+    if (d_br && lvl < 4)                    /* breathing out: one step quieter */
+        lvl++;
     d_tw = w;
     d_tn = n;
     d_tl = lvl;
-    if (!d_on || w != d_wave)
-        d_st = DS_DOWN;
-    else if (n != d_note)
-        d_st = DS_DIP;
-    else if (lvl != d_code)
-        d_st = DS_SLIDE;
-    else
+    if (d_st == DS_DOWN || d_st == DS_LOAD)
+        return;                             /* a swap is under way: it takes the new targets */
+    if (!d_on) {
+        d_st = DS_LOAD;
+        d_t = 2;                            /* next frame: keeps commit + load apart */
         return;
-    d_t = 2;                                /* start next frame: keeps commit + load apart */
+    }
+    if (w != d_wave) {
+        d_st = DS_DOWN;
+        d_t = 2;
+        return;
+    }
+    if (n != d_note) {                      /* a new degree: change pitch in place */
+        d_note = n;
+        drone_pitch();
+    }
+    if (lvl != d_code && d_st == DS_IDLE) {
+        d_st = DS_SLIDE;
+        d_t = 2;
+    }
 }
 
 static uint8_t drone_rnd(void)
@@ -365,11 +384,12 @@ static void drone_breathe(void)
         d_bt--;
         return;
     }
-    if (!d_br) {                            /* breathe out: fade to silence and rest */
+    if (d_blv >= 4)
+        return;                             /* faded out: nothing to breathe */
+    if (!d_br) {                            /* breathe out: one step quieter */
         d_br = 1;
-        d_blv = d_tl;
-        d_tl = 4;
-        d_bt = (uint8_t)(16 + (drone_rnd() & 15));      /* 2.1-4.1 s incl. the fade */
+        d_tl = (uint8_t)(d_blv + 1);
+        d_bt = (uint8_t)(16 + (drone_rnd() & 15));      /* 2.1-4.1 s */
     } else {                                /* breathe in */
         d_br = 0;
         d_tl = d_blv;
@@ -382,8 +402,6 @@ static void drone_breathe(void)
 static void drone_frame(void)
 {
     if (d_st == DS_IDLE) {
-        if (d_wob && d_on && !(fc & 31))
-            drone_pitch((uint8_t)(fc & 32));
         if ((lay & LAY_LOOPS) && d_on)
             drone_breathe();
         return;
@@ -392,20 +410,28 @@ static void drone_frame(void)
         return;
     switch (d_st) {
     case DS_DOWN:
-        if (d_on && (uint8_t)(d_code + datt[att]) < 4) {
-            d_code++;
-            drone_out();
-            d_t = 8;
-        } else {
-            d_wave = d_tw;
-            d_note = d_tn;
-            drone_load();
-            d_code = 4;
-            d_st = DS_SLIDE;
+        if (d_on && ((uint8_t)(d_code + datt[att]) < 4 || d_olv < 4)) {
+            if ((uint8_t)(d_code + datt[att]) < 4)
+                d_code++;
+            drone_out();                    /* (until the output itself is at 0%) */
             d_t = 12;
+        } else {
+            if (d_on)
+                drone_stop();
+            d_code = 4;
+            d_st = DS_LOAD;
+            d_t = 2;
         }
         break;
-    case DS_SLIDE:
+    case DS_LOAD:
+        d_wave = d_tw;
+        d_note = d_tn;
+        drone_load();
+        d_code = 4;
+        d_st = DS_SLIDE;
+        d_t = 12;
+        break;
+    default: /* DS_SLIDE */
         if (d_code > d_tl)
             d_code--;
         else if (d_code < d_tl)
@@ -416,19 +442,6 @@ static void drone_frame(void)
         else
             d_t = 16;
         break;
-    case DS_DIP:
-        if (d_code < 4)
-            d_code++;
-        drone_out();
-        d_st = DS_DIP2;
-        d_t = 12;
-        break;
-    default: /* DS_DIP2 */
-        d_note = d_tn;
-        drone_pitch(0);
-        d_st = DS_SLIDE;
-        d_t = 12;
-        break;
     }
 }
 
@@ -438,11 +451,12 @@ static void wind_out(void)
     uint8_t l, col;
     if (snd_owned & 8)
         return;
-    l = w_on ? atten(w_lvl) : 0;
+    l = (w_on && !muted) ? atten(w_lvl) : 0;
     if (!l) {
-        if (w_out) {
+        if (w_out) {                        /* fade out in hardware from where it is */
+            SND_W(SND_NR42, (uint8_t)((w_out << 4) | 1));   /* falling: no zombie glitch */
+            SND_W(SND_NR44, 0x80);          /* (a held level only lets go on a trigger) */
             w_out = 0;
-            SND_W(SND_NR42, 0x00);
         }
         return;
     }
@@ -517,18 +531,13 @@ static void wind_frame(void)
         w_rate = wp_rise;
         w_frate = wp_fall;
         w_tmr = (uint8_t)((wp_flags & WF_WAVES) ? 30 + (r & 63) : 1);   /* surf: rest between waves */
-    } else if (wp_flags & WF_JITTER) {      /* rain: shimmering hiss */
-        w_tgt = (uint8_t)(wp_calm + 1);
-        w_rate = 2;
-        w_frate = (uint8_t)(2 + (r & 3));
-        w_tmr = (uint8_t)(1 + (r & 7));
     } else {                                /* calm */
         w_tmr = (uint8_t)(24 + (r & 127));
     }
 }
 
 /* ------------------------------------------------------------------ notes + echo */
-static void echo_push(uint8_t n, uint8_t v, uint8_t pace, uint8_t duty, uint8_t pan)
+static void echo_push(uint8_t n, uint8_t v, uint8_t pace, uint8_t duty)
 {
     uint8_t h = eq_h, nh = (uint8_t)((h + 1) & 7);
     if (v < (uint8_t)(g_fb + 2) || nh == eq_t)
@@ -538,24 +547,21 @@ static void echo_push(uint8_t n, uint8_t v, uint8_t pace, uint8_t duty, uint8_t 
     eq_due[h] = (uint8_t)(fc + echo_d);
     eq_pace[h] = pace;
     eq_duty[h] = duty;
-    eq_pan[h] = (pan == PAN_L) ? PAN_R : PAN_L;   /* ping-pong: the other side */
     eq_h = nh;
 }
 
-static void ch1_note(uint8_t n, uint8_t v, uint8_t pace, uint8_t duty, uint8_t pan)
+static void ch1_note(uint8_t n, uint8_t v, uint8_t pace, uint8_t duty)
 {
     uint16_t f;
     v = atten(v);
-    if (!v || (snd_owned & 1))
-        return;
+    if (!v || muffle || muted || (snd_owned & 1))
+        return;                             /* the map: the melody holds its breath */
     f = snd_freq[n];
-    pan1 = pan;
-    nr51_update();
     SND_W(SND_NR11, duty);
     SND_W(SND_NR12, (uint8_t)((v << 4) | pace));
     SND_W(SND_NR13, (uint8_t)f);
     SND_W(SND_NR14, (uint8_t)(0x80 | (f >> 8)));
-    echo_push(n, v, pace, duty, pan);
+    echo_push(n, v, pace, duty);
     fired = 1;
 }
 
@@ -567,26 +573,22 @@ static void echo_frame(void)
         return;                             /* head not due yet */
     eq_t = (uint8_t)((i + 1) & 7);
     v = eq_v[i];
-    if (!(snd_owned & 2)) {
-        f = (uint16_t)(snd_freq[eq_n[i]] + g_det);
-        if (f > 2047)
-            f = 2047;
-        pan2 = (uint8_t)(eq_pan[i] << 1);
-        nr51_update();
+    if (!(snd_owned & 2) && !muted) {
+        f = snd_freq[eq_n[i]];              /* in tune: a detune of one step is ~30 cents up high */
         SND_W(SND_NR21, eq_duty[i]);
         SND_W(SND_NR22, (uint8_t)((v << 4) | eq_pace[i]));
         SND_W(SND_NR23, (uint8_t)f);
         SND_W(SND_NR24, (uint8_t)(0x80 | (f >> 8)));
     }
-    echo_push(eq_n[i], v, eq_pace[i], eq_duty[i], eq_pan[i]);   /* feedback */
+    echo_push(eq_n[i], v, eq_pace[i], eq_duty[i]);   /* feedback */
 }
 
+/* The pulses are never silenced by a register write: every note (music and sfx) is triggered
+   with a falling envelope, so it dies away by itself within a second.  NRx2 = 0 would switch
+   the DAC off (a pop), and rewriting NRx2 on a playing channel bumps its volume (zombie
+   mode), so silencing only drops what is queued. */
 static void silence_pulses(void)
 {
-    if (!(snd_owned & 1))
-        SND_W(SND_NR12, 0x00);
-    if (!(snd_owned & 2))
-        SND_W(SND_NR22, 0x00);
     eq_h = eq_t = 0;
     pn_t = 0;
 }
@@ -658,7 +660,6 @@ static void commit_b(void)
     g_vol = v < 4 ? 4 : v;
     g_pace = b_pace[b];
     g_duty = b_duty[b];
-    g_det = b_det[b];
     v = (uint8_t)(b_skip[b] + ph_skip[c_phase]);
     g_skip = v < b_skip[b] ? 255 : v;
     calc_step();
@@ -666,7 +667,6 @@ static void commit_b(void)
     dn = b_drone[b][0];
     if (g_night && dn >= N_D4)
         dn -= 12;
-    d_wob = (b == B_ASH);
     drone_request(b_wave[b], dn, b_dlev[b]);
     /* wind / weather */
     if (wx == WX_RAIN)
@@ -681,12 +681,13 @@ static void commit_b(void)
             if (wp_gust > 2)
                 wp_gust--;
         } else if (wx == WX_FOG) {
-            wp_calm = 1;
-            wp_gust = 2;
+            wp_calm = 0;
+            wp_gust = 1;
             wp_prob = 40;
         }
         if (g_night) {
-            wp_gust++;
+            if (wp_gust < 3)
+                wp_gust++;
             wp_prob = (uint8_t)(wp_prob > 200 ? 255 : wp_prob + 40);
         }
     }
@@ -720,18 +721,17 @@ static void do_work(void)
     }
 }
 
-static void play_or_pend(uint8_t n, uint8_t v, uint8_t pan)
+static void play_or_pend(uint8_t n, uint8_t v)
 {
     if (fired) {                            /* one CH1 note per step: the other waits */
         if (!pn_t) {
             pn_t = 1;
             pn_n = n;
             pn_v = v;
-            pn_pan = pan;
         }
         return;
     }
-    ch1_note(n, v, g_pace, g_duty, pan);
+    ch1_note(n, v, g_pace, g_duty);
 }
 
 static void loop_fire(uint8_t i)
@@ -758,7 +758,7 @@ static void loop_fire(uint8_t i)
         if (g_night && n > N_D5)
             n -= 12;
         v = (uint8_t)(g_vol + (r & 1));
-        play_or_pend(n, v, pan_pick[r >> 6]);
+        play_or_pend(n, v);
         c = g_cell;
         if (c == CELL_MIX) {
             c = (uint8_t)((r >> 1) & 3);
@@ -777,7 +777,6 @@ static void loop_fire(uint8_t i)
             pn_t = 2;
             pn_n = n;
             pn_v = (uint8_t)(v - 1);
-            pn_pan = pan_pick[(r >> 4) & 3];
         }
     } else if (i == L_STAR) {
         if (!g_star)
@@ -786,7 +785,7 @@ static void loop_fire(uint8_t i)
         if (r < 64)
             return;
         if (!fired)
-            ch1_note(star_pool[r & 7], 3, 3, 0x40, (r & 8) ? PAN_L : PAN_R);
+            ch1_note(star_pool[r & 7], 3, 3, 0x40);
     } else {
         i -= L_BEACON;
         if (!(bmask & bit8[i]))
@@ -795,7 +794,7 @@ static void loop_fire(uint8_t i)
             lp_cnt[i + L_BEACON] = 1;       /* ring next step instead */
             return;
         }
-        ch1_note(btone[i], 5, 7, 0x80, bpan[i]);
+        ch1_note(btone[i], 5, 7, 0x80);
     }
 }
 
@@ -813,7 +812,7 @@ static void world_step(void)
         if (fired)
             pn_t = 1;
         else if (pn_v)
-            ch1_note(pn_n, pn_v, g_pace, g_duty, pn_pan);
+            ch1_note(pn_n, pn_v, g_pace, g_duty);
     }
     if (++step_ctr == 16) {                 /* phrase boundary */
         step_ctr = 0;
@@ -821,7 +820,7 @@ static void world_step(void)
             work |= WK_A | WK_B;
         } else {
             i = rnd();
-            if (i < 56) {                   /* the drone leans to another degree */
+            if (i < 96) {                   /* the drone walks to another degree */
                 uint8_t dn = b_drone[c_biome][i & 3];
                 if (g_night && dn >= N_D4)
                     dn -= 12;
@@ -859,9 +858,9 @@ static void motif_frame(void)
         w = mo_p[2];
         mo_p += 3;
         if (op < 0x80) {
-            ch1_note(op, (uint8_t)(a >> 4), (uint8_t)(a & 7), mo_duty, PAN_C);
+            ch1_note(op, (uint8_t)(a >> 4), (uint8_t)(a & 7), mo_duty);
         } else if (op == 0xF0) {
-            drone_request(d_tw, a, d_tl);
+            drone_request(d_tw, a, d_blv);
         } else if (op == 0xF3) {
             mo_duty = a;
         } else if (op == 0xF4) {
@@ -890,7 +889,8 @@ static void switch_mode(uint8_t m)
 {
     if (d_br) {                             /* a new mode starts with the drone breathing in */
         d_br = 0;
-        d_tl = d_blv;
+        if (d_blv < 4)
+            d_tl = d_blv;
     }
     d_bt = 40;
     snd_cur_mode = m;
@@ -905,13 +905,11 @@ static void switch_mode(uint8_t m)
         d_code = 4;                         /* drone and wind are silent: ramp from zero */
         w_lvl = 0;
     }
-    g_det = 1;
     g_fb = 2;
     switch (m) {
     case AMB_TITLE:
         motif_start(mo_title);
         drone_request(WV_WARM, N_D4, 2);
-        d_wob = 0;
         wind_profile(wind_title);
         lay = LAY_MOTIF | LAY_WIND;
         echo_d = 36;
@@ -925,7 +923,6 @@ static void switch_mode(uint8_t m)
     case AMB_ENDING:
         motif_start(mo_ending);
         drone_request(WV_WARM, N_D4, 2);
-        d_wob = 0;
         wind_profile(wind_title);
         lay = LAY_MOTIF | LAY_WIND;
         echo_d = 33;
@@ -940,8 +937,6 @@ static void switch_mode(uint8_t m)
         wind_off();
         break;
     }
-    nr50_update();
-    nr51_update();
 }
 
 /* After a switch from silence: the world fades in; the composed motifs start at full
@@ -975,8 +970,6 @@ static void request_mode(uint8_t m)
     if ((snd_cur_mode == AMB_WORLD && m == AMB_MAP) || (snd_cur_mode == AMB_MAP && m == AMB_WORLD)) {
         snd_cur_mode = m;
         muffle = (m == AMB_MAP);
-        nr50_update();
-        nr51_update();
         return;
     }
     if ((snd_cur_mode == AMB_WORLD || snd_cur_mode == AMB_MAP) && m == AMB_ENDING) {
@@ -1031,8 +1024,7 @@ static void master_frame(void)
         return;
     mf_t = mf_rate;
     if (m_lvl) {
-        m_lvl--;
-        nr50_update();
+        m_lvl--;                            /* nr50_frame() follows */
     } else {                                /* the world has dissolved */
         mf_rate = 0;
         lay = 0;
@@ -1044,28 +1036,32 @@ static void master_frame(void)
 }
 
 /* ------------------------------------------------------------------ sfx */
-static void release(uint8_t m)
+static uint8_t vo_n42;                   /* the last NR42 an sfx script wrote */
+
+/* hand channels back.  A script that ran to its end left them fading (gen_music.py checks);
+   one cut short may be holding a noise level (pace 0), which only a trigger releases. */
+static void release(uint8_t m, uint8_t early)
 {
     snd_owned &= (uint8_t)~m;
-    if (m & 1) {
-        SND_W(SND_NR10, 0x00);
-        SND_W(SND_NR12, 0x00);
-    }
-    if (m & 2)
-        SND_W(SND_NR22, 0x00);
+    if (m & 1)
+        SND_W(SND_NR10, 0x00);              /* sweep off; the note fades by itself */
     if (m & 8) {
-        w_out = 0xFF;                       /* force the wind (or silence) back */
-        wind_out();
+        if (early && (vo_n42 & 0xF0) && !(vo_n42 & 7)) {
+            SND_W(SND_NR42, (uint8_t)((vo_n42 & 0xF0) | 1));   /* falling from where it is */
+            SND_W(SND_NR44, 0x80);
+        }
+        w_lvl = 0;                          /* the wind swells back from silence; every sfx */
+        w_tmr = 1;                          /* ends on a falling envelope (gen_music.py checks) */
+        w_out = 0;
     }
-    nr51_update();
 }
 
-static void voice_stop(uint8_t i, uint8_t keep)
+static void voice_stop(uint8_t i, uint8_t keep, uint8_t early)
 {
     uint8_t m = (uint8_t)(vo_mask[i] & ~keep);
     vo_p[i] = 0;
     snd_vo_on &= (uint8_t)~(i + 1);
-    release(m);
+    release(m, early);
 }
 
 static void sfx_start(uint8_t id)
@@ -1078,14 +1074,14 @@ static void sfx_start(uint8_t id)
             return;                         /* busy with something more important */
     for (i = 0; i < 2; i++)
         if (vo_p[i] && (vo_mask[i] & m))
-            voice_stop(i, m);
+            voice_stop(i, m, 1);
     i = 0;
     if (vo_p[0]) {
         i = 1;
         if (vo_p[1]) {
             if (vo_prio[0] <= vo_prio[1])
                 i = 0;
-            voice_stop(i, 0);
+            voice_stop(i, 0, 1);
         }
     }
     if (id <= SFX_STEP_STONE)
@@ -1097,7 +1093,6 @@ static void sfx_start(uint8_t id)
     vo_prio[i] = pr;
     snd_vo_on |= (uint8_t)(i + 1);
     snd_owned |= m;
-    nr51_update();
 }
 
 static const uint8_t *vp;                /* script pointer (a global: cheaper on SDCC) */
@@ -1120,9 +1115,11 @@ static void voice_run(uint8_t i)
         }
         if (!b) {
             SND_SRC(SND_SRC_MUSIC);
-            voice_stop(i, 0);
+            voice_stop(i, 0, 0);
             return;
         }
+        if (b == SND_NR42)
+            vo_n42 = *vp;
         SND_W(b, *vp);
         vp++;
     }
@@ -1133,16 +1130,18 @@ void snd_core_init(void)
 {
     uint8_t i;
     SND_SRC(SND_SRC_MUSIC);
-    SND_W(SND_NR52, 0x80);
+    SND_W(SND_NR52, 0x00);                  /* power-cycle: every channel stopped (the boot */
+    SND_W(SND_NR52, 0x80);                  /* chime may still be playing on CH1) */
     SND_W(SND_NR50, 0x77);
     SND_W(SND_NR51, 0xFF);
+    /* every DAC on, once, at volume 0: from here on nothing switches one off (see the top) */
     SND_W(SND_NR10, 0x00);
-    SND_W(SND_NR12, 0x00);
-    SND_W(SND_NR22, 0x00);
-    SND_W(SND_NR30, 0x00);
-    SND_W(SND_NR42, 0x00);
-    nr50_last = 0x77;
-    nr51_last = 0xFF;
+    SND_W(SND_NR12, ENV_FADE);
+    SND_W(SND_NR22, ENV_FADE);
+    SND_W(SND_NR32, 0x00);
+    SND_W(SND_NR30, 0x80);
+    SND_W(SND_NR42, ENV_FADE);
+    n50 = 7;
     snd_req_mode = REQ_NONE;
     snd_req_mute = 0;
     snd_req_fast = 0;
@@ -1160,8 +1159,6 @@ void snd_core_init(void)
     muffle = muted = fast = 0;
     m_lvl = 7;
     mf_rate = 0;
-    pan1 = PAN_C;
-    pan2 = PAN_C << 1;
     rng = 0x1234;
     wrng = 0xACE1;
     snd_p_biome = B_MEADOW;
@@ -1176,7 +1173,6 @@ void snd_core_init(void)
     bmask = 0;
     g_mask = 0;
     g_fb = 2;
-    g_det = 1;
     step_len = 16;
     echo_d = 24;
     eq_h = eq_t = 0;
@@ -1192,17 +1188,16 @@ void snd_core_init(void)
     d_st = DS_IDLE;
     d_code = 4;
     d_last = 0xFF;
+    d_olv = 4;
     d_wave = 0xFF;
-    d_wob = 0;
     d_br = 0;
+    d_blv = 4;
     d_bt = 40;
     d_rng = 0x5D;
     w_on = 0;
     w_out = 0;
     w_lvl = 0;
     mo_p = 0;
-    nr50_update();
-    nr51_update();
 }
 
 void snd_core_tick(void)
@@ -1222,9 +1217,18 @@ void snd_core_tick(void)
     }
     r = snd_req_mute;
     if (r != muted) {
-        muted = r;
-        nr51_update();
+        muted = r;                          /* NR51 stays: everything fades instead */
+        if (r) {
+            if (vo_p[0])
+                voice_stop(0, 0, 1);
+            if (vo_p[1])
+                voice_stop(1, 0, 1);
+            silence_pulses();
+        }
+        wind_out();
     }
+    nr50_frame();
+    d_wrote = 0;
     r = snd_req_fast;
     if (r != fast) {
         fast = r;
@@ -1249,7 +1253,9 @@ void snd_core_tick(void)
     }
     /* one sfx start per frame, and not on a music step (a frame later is inaudible): a
        burst of requests never lands on a single tick */
-    if (snd_rq_tail != snd_rq_head && !r) {
+    if (muted)
+        snd_rq_tail = snd_rq_head;          /* no sfx while muted */
+    else if (snd_rq_tail != snd_rq_head && !r) {
         sfx_start(snd_rq[snd_rq_tail]);
         snd_rq_tail = (uint8_t)((snd_rq_tail + 1) & 3);
     }
@@ -1269,6 +1275,8 @@ void snd_core_tick(void)
         wind_frame();
     if (mf_rate)
         master_frame();
+    if (d_on)
+        drone_out();                        /* catch up a step held back this tick, or a mute */
 
     /* ---- sfx ---- */
     if (vo_p[0])

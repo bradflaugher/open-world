@@ -163,10 +163,13 @@ SDCC 4.3 miscompile, which is now worked around.
 wanderer. It stays within the 10-sprites-per-line limit even in rain, and a test checks that.
 
 **Sound.** A custom 4-channel generative engine:
-- Channel 3 (wave): a drone for each biome.
-- Channel 1: sparse phrases from six prime-length loops.
-- Channel 2: a detuned ping-pong echo of channel 1.
-- Channel 4: wind, surf and rain.
+- Channel 3 (wave): a soft drone for each biome that breathes and wanders.
+- Channel 1: sparse pentatonic phrases from six prime-length loops.
+- Channel 2: an echo of channel 1.
+- Channel 4: soft gusts of wind, surf and rain, and the footsteps.
+
+It is written to be click-free on real hardware: DACs never switch off, the panning is fixed,
+and volumes move one step at a time (see docs/DESIGN.md §9).
 
 There are 21 sound effects, which borrow channels and hand them back cleanly. The engine uses
 about 300 M-cycles per frame.
@@ -219,7 +222,8 @@ build/owgen stats 1 64               # biome mix, distances, reachability over 6
   - mods and bearings.
 - **Sound:** a fake APU checks every biome × phase × weather combination and every mode and
   effect. It also checks that channels are borrowed and returned, that wave RAM is written only
-  while the channel is off, and a 200k-frame stress run.
+  while the channel is stopped, that nothing pops (no DAC off, no NR51 re-routing, no NR50 or
+  CH3 volume jumps, no rising envelopes), and a 200k-frame stress run.
 - **ROM, DMG and CGB:**
   - the streamed land matches the host generator (tile by tile, including shore edges) after
     walking and running in every direction;
