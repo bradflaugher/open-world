@@ -5,6 +5,10 @@
  *
  * Every APU register write goes through host_snd_write() (hw_sound.h); the hook below
  * validates each one against the hardware rules and keeps per-test statistics.
+ *
+ * Pops: on the hardware a DAC that is on sits at full DC offset even at volume 0, so a DAC
+ * switched off / on, a channel re-routed in NR51, a jump of NR50 or of the CH3 volume code
+ * all click.  PyBoy mixes digital volume and hides that, so the hook counts those here.
  */
 #include <stdio.h>
 #include <string.h>
@@ -20,10 +24,12 @@ static int n_pass, n_fail;
 /* ---- write monitor ---- */
 static unsigned long w_total, w_bad_reg, w_bad_nrx4, w_bad_wave, w_bad_52, w_ch3_retrig, w_wave_loud;
 static unsigned long w_music_on_owned, w_sfx_outside, w_sfx_wave;
+static unsigned long w_dac_off, w_nr51, w_nr50_jump, w_nr32_jump, w_env_up;
 static unsigned long trig[4], trig_music[4], wave_loads;
 static unsigned long tick_writes, max_tick_writes, sum_tick_writes, n_ticks;
 static uint8_t sfx_mask_now;
-static uint8_t ch3_playing;
+static uint8_t ch3_playing, ch3_stopping;  /* stopping: length set to expire (gone by next tick) */
+static int in_init;
 static uint32_t log_hash;
 static uint16_t ch1_freq_seen[2048 / 16];
 
@@ -49,27 +55,37 @@ static void hook(uint8_t r, uint8_t v)
     if (r == 0x23 && (v & 0x3F))
         w_bad_nrx4++;
     if (r >= 0x30 && r <= 0x3F) {
-        if (host_snd_regs[0x1A] & 0x80)
-            w_bad_wave++;                       /* wave RAM written with the CH3 DAC on */
+        if (ch3_playing)
+            w_bad_wave++;                       /* wave RAM written while CH3 runs (DMG: corrupt) */
+        if (host_snd_regs[0x1C] != 0x00)
+            w_wave_loud++;                      /* the drone was not faded out first */
         if (r == 0x30)
             wave_loads++;
     }
-    if (r == 0x1A) {
-        if (!(v & 0x80)) {
-            if (ch3_playing && host_snd_regs[0x1C] != 0x00 && host_snd_regs[0x24] != 0)
-                w_wave_loud++;                  /* DAC switched off while the drone was audible */
-            ch3_playing = 0;
-        }
+    if (!in_init) {
+        if (((r == 0x12 || r == 0x17 || r == 0x21) && !(v & 0xF8)) || (r == 0x1A && !(v & 0x80)))
+            w_dac_off++;                        /* DAC off: a pop */
+        if (r == 0x25)
+            w_nr51++;                           /* re-routing: a pop */
+        if ((r == 0x12 || r == 0x17 || r == 0x21) && (v & 0x08))
+            w_env_up++;                         /* rising envelope: zombie-mode click on a live channel */
     }
+    if (r == 0x1A && !(v & 0x80))
+        ch3_playing = ch3_stopping = 0;
+    if (r == 0x1E && !(v & 0x80) && (v & 0x40) && host_snd_regs[0x1B] == 0xFF)
+        ch3_stopping = 1;
     if (r == 0x1E && (v & 0x80)) {
         if (ch3_playing)
             w_ch3_retrig++;                     /* DMG: retrigger while playing corrupts wave RAM */
         ch3_playing = 1;
+        ch3_stopping = 0;
     }
-    if (r == 0x26 && v != 0x80)
+    if (r == 0x26 && v != 0x80 && !in_init)
         w_bad_52++;
     if (c >= 0) {
-        if ((r == 0x14 || r == 0x19 || r == 0x1E || r == 0x23) && (v & 0x80)) {
+        if ((r == 0x14 || r == 0x19 || r == 0x1E || r == 0x23) && (v & 0x80) &&
+            !(c == 0 && !(host_snd_regs[0x12] >> 4)) && !(c == 1 && !(host_snd_regs[0x17] >> 4))) {
+            /* (a pulse triggered at volume 0 is a silence, not a note) */
             trig[c]++;
             if (host_snd_src == SND_SRC_MUSIC)
                 trig_music[c]++;
@@ -89,12 +105,45 @@ static void hook(uint8_t r, uint8_t v)
         w_sfx_outside++;
 }
 
+/* level of an NR32 value: 1 = 100% .. 4 = mute */
+static int nr32_level(uint8_t v)
+{
+    switch (v & 0x60) {
+    case 0x20: return 1;
+    case 0x40: return 2;
+    case 0x60: return 3;
+    default: return 4;
+    }
+}
+
+/* wraps host_snd_write: sees the old register value before it is replaced */
+static uint8_t prev_regs[0x40];
+static void hook_outer(uint8_t r, uint8_t v)
+{
+    if (!in_init) {
+        if (r == 0x24) {
+            int d = (int)(v & 7) - (int)(prev_regs[0x24] & 7);
+            if (d > 1 || d < -1 || (v >> 4) != (v & 7))
+                w_nr50_jump++;
+        }
+        if (r == 0x1C) {
+            int d = nr32_level(v) - nr32_level(prev_regs[0x1C]);
+            if (d > 1 || d < -1)
+                w_nr32_jump++;
+        }
+    }
+    if (r < 0x40)
+        prev_regs[r] = v;
+    hook(r, v);
+}
+
 static int seen_ch1(unsigned f) { return (ch1_freq_seen[f >> 4] >> (f & 15)) & 1; }
 
 static void reset_stats(void)
 {
     w_total = w_bad_reg = w_bad_nrx4 = w_bad_wave = w_bad_52 = w_ch3_retrig = w_wave_loud = 0;
     w_music_on_owned = w_sfx_outside = w_sfx_wave = 0;
+    w_dac_off = w_nr51 = w_nr50_jump = w_nr32_jump = w_env_up = 0;
     memset(trig, 0, sizeof trig);
     memset(trig_music, 0, sizeof trig_music);
     memset(ch1_freq_seen, 0, sizeof ch1_freq_seen);
@@ -111,11 +160,19 @@ static void check_clean(const char *what)
     CHECK(w_music_on_owned == 0, "%s: %lu music writes to sfx-owned channels", what, w_music_on_owned);
     CHECK(w_sfx_outside == 0, "%s: %lu sfx writes outside mask", what, w_sfx_outside);
     CHECK(w_sfx_wave == 0, "%s: %lu sfx writes to the wave channel", what, w_sfx_wave);
+    CHECK(w_wave_loud == 0, "%s: %lu wave RAM writes with the drone not faded out", what, w_wave_loud);
+    CHECK(w_dac_off == 0, "%s: %lu DACs switched off (pops)", what, w_dac_off);
+    CHECK(w_nr51 == 0, "%s: %lu NR51 re-routings (pops)", what, w_nr51);
+    CHECK(w_nr50_jump == 0, "%s: %lu NR50 jumps (pops)", what, w_nr50_jump);
+    CHECK(w_nr32_jump == 0, "%s: %lu CH3 volume jumps (pops)", what, w_nr32_jump);
+    CHECK(w_env_up == 0, "%s: %lu rising envelopes (zombie clicks)", what, w_env_up);
 }
 
 static void tick(void)
 {
     tick_writes = 0;
+    if (ch3_stopping)                           /* the length counter ran out (1/256 s) */
+        ch3_playing = ch3_stopping = 0;
     sound_tick();
     if (tick_writes > max_tick_writes)
         max_tick_writes = tick_writes;
@@ -132,8 +189,11 @@ static void ticks(int n)
 static void fresh(void)
 {
     memset(host_snd_regs, 0, sizeof host_snd_regs);
-    ch3_playing = 0;
+    memset(prev_regs, 0, sizeof prev_regs);
+    ch3_playing = ch3_stopping = 0;
+    in_init = 1;
     sound_init();
+    in_init = 0;
     reset_stats();
 }
 
@@ -196,7 +256,7 @@ static void test_world_all(void)
                 CHECK(trig[0] >= 3, "%s: CH1 phrases (%lu)", what, trig[0]);
                 CHECK(trig[1] >= 1, "%s: CH2 echoes (%lu)", what, trig[1]);
                 CHECK(trig[2] == 1, "%s: drone triggered once (%lu)", what, trig[2]);
-                CHECK(trig[3] >= 5, "%s: wind moves (%lu)", what, trig[3]);
+                CHECK(trig[3] >= (wx == WX_FOG ? 2u : 5u), "%s: wind moves (%lu; fog is hushed)", what, trig[3]);
                 CHECK(host_snd_regs[0x1A] == 0x80, "%s: drone on (it breathes: see test_drone_breathes)", what);
                 CHECK(trig[0] < 60 * 50 / 8, "%s: CH1 not frantic (%lu)", what, trig[0]);
             }
@@ -235,7 +295,10 @@ static void test_modes(void)
             CHECK(w_total == 0, "SILENT: no writes (%lu)", w_total);
             continue;
         }
-        CHECK(trig[0] >= 3, "%s: CH1 notes (%lu)", mode_names[m], trig[0]);
+        if (m == AMB_MAP)
+            CHECK(trig_music[0] == 0, "MAP: no CH1 melody (%lu)", trig_music[0]);
+        else
+            CHECK(trig[0] >= 3, "%s: CH1 notes (%lu)", mode_names[m], trig[0]);
         CHECK(trig[2] >= 1, "%s: drone (%lu)", mode_names[m], trig[2]);
         CHECK(trig[3] >= 1, "%s: wind (%lu)", mode_names[m], trig[3]);
         if (m == AMB_WAKE)
@@ -243,37 +306,41 @@ static void test_modes(void)
         else
             CHECK(sound_debug_mode() == m, "%s: mode held (%u)", mode_names[m], sound_debug_mode());
     }
-    /* MAP: muffled mix, CH1 dropped, restored on return */
+    /* MAP: the melody holds its breath (no new CH1 notes), drone + wind go on; restored on return */
     fresh();
     ambient_set(B_FOREST, PH_DAY, WX_CLEAR);
     ambient_mode(AMB_WORLD);
     ticks(600);
     ambient_mode(AMB_MAP);
-    tick();
-    CHECK((host_snd_regs[0x25] & 0x11) == 0, "MAP drops CH1 (NR51 %02x)", host_snd_regs[0x25]);
-    CHECK(host_snd_regs[0x24] < 0x77, "MAP lowers NR50 (%02x)", host_snd_regs[0x24]);
+    ticks(2);
+    reset_stats();
     ticks(600);
-    CHECK(trig[1] > 0 && trig[2] > 0, "MAP keeps echo + drone");
-    CHECK((host_snd_regs[0x25] & 0x11) == 0, "MAP keeps CH1 dropped (NR51 %02x)", host_snd_regs[0x25]);
+    CHECK(trig_music[0] == 0, "MAP: no CH1 melody (%lu)", trig_music[0]);
+    CHECK(host_snd_regs[0x1C] != 0, "MAP keeps the drone");
+    CHECK(host_snd_regs[0x25] == 0xFF && host_snd_regs[0x24] == 0x77, "MAP: routing + master untouched");
     sfx_mask_now = 8;
     sfx_play(SFX_MAP);
     run_sfx_until_done(200);
     sfx_mask_now = 0;
     ambient_mode(AMB_WORLD);
-    tick();
-    CHECK(host_snd_regs[0x24] == 0x77, "WORLD restores NR50 (%02x)", host_snd_regs[0x24]);
     ticks(600);
-    CHECK((host_snd_regs[0x25] & 0x11) != 0, "WORLD restores CH1 (NR51 %02x)", host_snd_regs[0x25]);
+    CHECK(trig_music[0] > 0, "WORLD brings the melody back (%lu)", trig_music[0]);
     check_clean("map");
-    /* mute */
+    /* mute: NR50 ramps down a step a frame, then the routing is cut */
     sound_mute_all(1);
     tick();
-    CHECK(host_snd_regs[0x25] == 0, "mute: NR51 = 0");
+    CHECK(host_snd_regs[0x25] == 0xFF && host_snd_regs[0x24] == 0x66, "mute ramps first (%02x %02x)",
+          host_snd_regs[0x25], host_snd_regs[0x24]);
+    ticks(10);
+    CHECK(host_snd_regs[0x25] == 0 && host_snd_regs[0x24] == 0, "mute: NR51 = 0");
     ticks(100);
     CHECK(host_snd_regs[0x25] == 0, "mute holds while music runs");
     sound_mute_all(0);
     tick();
-    CHECK(host_snd_regs[0x25] != 0, "unmute restores NR51");
+    CHECK(host_snd_regs[0x25] == 0xFF, "unmute restores NR51");
+    ticks(10);
+    CHECK(host_snd_regs[0x24] == 0x77, "unmute ramps NR50 back (%02x)", host_snd_regs[0x24]);
+    CHECK(w_nr50_jump == 0, "mute: NR50 never jumps");
 }
 
 static void test_transitions(void)
@@ -281,7 +348,7 @@ static void test_transitions(void)
     uint8_t i;
     int f;
     unsigned long loads;
-    /* biome change: applied at a phrase boundary, drone wave swapped with the DAC off after a fade */
+    /* biome change: applied at a phrase boundary, drone wave swapped after a fade, with the channel stopped */
     fresh();
     ambient_seed(4242);
     ambient_set(B_MEADOW, PH_DAY, WX_CLEAR);
@@ -294,7 +361,7 @@ static void test_transitions(void)
     CHECK(wave_loads == loads + 1, "biome change reloads the wave (%lu)", wave_loads - loads);
     CHECK(f > 2, "biome change waits for the phrase boundary (%d frames)", f);
     CHECK(f < 60 * 8, "biome change applied within 8 s (%d frames)", f);
-    CHECK(w_wave_loud == 0, "drone faded before DAC off (%lu)", w_wave_loud);
+    CHECK(w_wave_loud == 0, "drone faded before the swap (%lu)", w_wave_loud);
     ticks(300);
     CHECK(host_snd_regs[0x1C] != 0, "new drone faded in (%02x)", host_snd_regs[0x1C]);
     check_clean("biome change");
@@ -304,7 +371,7 @@ static void test_transitions(void)
         ticks(97 + (i & 3) * 71);
     }
     check_clean("biome walk");
-    CHECK(w_wave_loud == 0, "biome walk: drone always faded before DAC off (%lu)", w_wave_loud);
+    CHECK(w_wave_loud == 0, "biome walk: drone always faded before a swap (%lu)", w_wave_loud);
     /* mode crossfades title -> world -> title */
     fresh();
     ambient_mode(AMB_TITLE);
@@ -317,7 +384,7 @@ static void test_transitions(void)
     CHECK(sound_debug_mode() == AMB_TITLE, "retargeted fade ends in TITLE");
     ambient_mode(AMB_SILENT);
     ticks(120);
-    CHECK(!(host_snd_regs[0x1A] & 0x80) && host_snd_regs[0x21] == 0, "SILENT: drone + wind off");
+    CHECK(host_snd_regs[0x1C] == 0 && host_snd_regs[0x21] == 0x11, "SILENT: drone + wind faded (DACs stay on)");
     {
         unsigned long before = w_total;
         ticks(300);
@@ -363,7 +430,7 @@ static void test_beacons_ending(void)
     reset_stats();
     for (f = 0; f < 60 * 90; f++) {
         tick();
-        if (f > 60 && !(host_snd_regs[0x1A] & 0x80) && host_snd_regs[0x24] == 0)
+        if (f > 60 && host_snd_regs[0x1C] == 0 && host_snd_regs[0x24] == 0)
             break;
     }
     CHECK(f < 60 * 90, "ending finishes within 90 s (%d)", f);
@@ -415,14 +482,19 @@ static void test_sfx(void)
                 CHECK(host_snd_regs[0x10] == 0, "%s: sweep cleared", what);
             check_clean(what);
             if (bg == 0) {
-                CHECK(host_snd_regs[0x12] == 0 || !(sfx_mask_now & 1), "%s: CH1 silent after", what);
-                CHECK(host_snd_regs[0x17] == 0 || !(sfx_mask_now & 2), "%s: CH2 silent after", what);
-                CHECK(host_snd_regs[0x21] == 0 || !(sfx_mask_now & 8), "%s: CH4 silent after", what);
+                CHECK(host_snd_regs[0x12] == 0x11 || !(sfx_mask_now & 1), "%s: CH1 fades after", what);
+                CHECK(host_snd_regs[0x17] == 0x11 || !(sfx_mask_now & 2), "%s: CH2 fades after", what);
+                CHECK(host_snd_regs[0x21] == 0x11 || !(sfx_mask_now & 8), "%s: CH4 fades after", what);
             } else {
                 unsigned long t3 = trig_music[3], t0 = trig_music[0];
-                if (sfx_mask_now & 8) {
-                    /* the wind (or rain) comes straight back */
-                    CHECK(host_snd_regs[0x21] != 0 || bg == 2, "%s: wind restored (NR42 %02x)", what, host_snd_regs[0x21]);
+                if ((sfx_mask_now & 8) && bg == 1) {
+                    /* the rain swells back from silence */
+                    int k, back = 0;
+                    for (k = 0; k < 120 && !back; k++) {
+                        tick();
+                        back = (host_snd_regs[0x21] >> 4) != 0 && host_snd_regs[0x21] != 0x11;
+                    }
+                    CHECK(back, "%s: rain back within 2 s", what);
                 }
                 ticks(900);
                 CHECK(trig_music[0] > t0, "%s: music resumes on CH1", what);
@@ -570,6 +642,8 @@ static void test_stress(void)
     }
     sfx_mask_now = 0;
     CHECK(w_bad_reg == 0 && w_bad_nrx4 == 0 && w_bad_wave == 0 && w_ch3_retrig == 0, "stress: register rules hold");
+    CHECK(w_dac_off == 0 && w_nr50_jump == 0 && w_nr32_jump == 0 && w_wave_loud == 0 && w_env_up == 0,
+          "stress: no pops (%lu %lu %lu %lu %lu)", w_dac_off, w_nr50_jump, w_nr32_jump, w_wave_loud, w_env_up);
     CHECK(w_music_on_owned == 0, "stress: music never writes owned channels");
     CHECK(w_sfx_outside == 0 && w_sfx_wave == 0, "stress: sfx stay in CH1/CH2/CH4");
     sound_mute_all(0);
@@ -600,36 +674,44 @@ static void test_cost(void)
     CHECK(sum_tick_writes < n_ticks * 3, "avg < 3 writes per tick");
 }
 
-/* the world drone breathes: it never holds one unbroken tone for long (that is what a crashed
-   Game Boy sounds like), but it is there most of the time */
+/* the world drone breathes: it never holds one unbroken, unchanging tone for long (that is what a
+   crashed Game Boy sounds like), but it does not fall silent either: it sinks one step and swells
+   back (a fade to silence and back is four pops), and it walks between degrees */
 static void test_drone_breathes(void)
 {
     uint8_t b;
     for (b = 0; b < B_COUNT; b++) {
-        int f, run = 0, longest = 0, rests = 0, quiet = 0, loud_prev = 0, total = 60 * 90;
+        int f, run = 0, longest = 0, quiet = 0, breaths = 0, moves = 0, total = 60 * 90;
+        uint8_t lv = 0, pitch = 0;
         fresh();
         ambient_seed((uint16_t)(0x2468 + b));
         ambient_set(b, b & 1 ? PH_NIGHT : PH_DAY, WX_CLEAR);
         ambient_mode(AMB_WORLD);
         ticks(60 * 3);
+        lv = host_snd_regs[0x1C];
+        pitch = host_snd_regs[0x1D];
         for (f = 0; f < total; f++) {
-            int loud;
             tick();
-            loud = (host_snd_regs[0x1A] & 0x80) && (host_snd_regs[0x1C] & 0x60);
-            if (loud) { run++; if (run > longest) longest = run; }
-            else { run = 0; quiet++; if (loud_prev) rests++; }
-            loud_prev = loud;
+            if (host_snd_regs[0x1C] != lv) { breaths++; run = 0; }
+            else if (host_snd_regs[0x1D] != pitch) { moves++; run = 0; }
+            else if (++run > longest) longest = run;
+            lv = host_snd_regs[0x1C];
+            pitch = host_snd_regs[0x1D];
+            if (!(host_snd_regs[0x1A] & 0x80) || host_snd_regs[0x1C] == 0)
+                quiet++;
         }
         check_clean("drone breathing");
-        CHECK(longest < 60 * 12, "biome %u: the drone held one breath for %d frames", b, longest);
-        CHECK(rests >= 6, "biome %u: the drone rested only %d times in 90 s", b, rests);
-        CHECK(quiet < total / 2, "biome %u: the drone was silent %d of %d frames", b, quiet, total);
+        CHECK(longest < 60 * 12, "biome %u: the drone held one unchanging tone for %d frames", b, longest);
+        CHECK(breaths >= 12, "biome %u: the drone breathed only %d times in 90 s", b, breaths);
+        CHECK(breaths <= 45, "biome %u: the drone volume moved %d times in 90 s (each is a soft click)", b, breaths);
+        CHECK(moves >= 1 || b == B_TUNDRA, "biome %u: the drone never moved (%d)", b, moves);
+        CHECK(quiet == 0, "biome %u: the drone fell silent for %d frames", b, quiet);
     }
 }
 
 int main(void)
 {
-    host_snd_hook = hook;
+    host_snd_hook = hook_outer;
     test_init();
     test_world_all();
     test_drone_breathes();

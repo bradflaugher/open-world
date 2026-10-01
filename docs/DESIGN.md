@@ -196,11 +196,21 @@ progressively ("surveying"), with the LCD on.
 ## 9. Sound
 
 A generative ambient engine:
-- **CH3 (wave):** a drone for each biome. It breathes: 5-10 s of tone, a fade, 2-4 s of rest.
-  One unbroken, unchanging tone is what a crashed Game Boy sounds like.
-- **CH1:** sparse pentatonic phrases from an LFSR, in the biome's mode.
-- **CH2:** an echo of CH1.
-- **CH4:** wind, gusting.
+- **CH3 (wave):** a soft drone for each biome. It breathes (5-10 s full, 2-4 s one step
+  quieter) and walks between degrees. One unbroken, unchanging tone is what a crashed Game Boy
+  sounds like; a fade to silence and back is four pops.
+- **CH1:** sparse phrases from an LFSR. Every biome's pool is pentatonic or suspended: no
+  semitones, no tritones, nothing that reads as a wrong note.
+- **CH2:** an in-tune echo of CH1.
+- **CH4:** wind in rare soft gusts with silence between them (a constant noise floor is
+  static), slow surf, a soft shower for rain. Footsteps borrow it and the wind swells back.
+
+**No pops.** On real hardware a channel whose DAC is on sits at full DC offset even at volume 0,
+so switching a DAC off or on, re-routing a channel in NR51, jumping NR50, a big step of the CH3
+volume code, or writing a rising envelope to a playing channel ("zombie mode") all click. The
+engine switches every DAC on once at boot and never off, keeps NR51 fixed (no per-note panning),
+ramps NR50 a step per frame, moves NR32 a step at a time, and only uses falling envelopes.
+PyBoy doesn't emulate any of this, so `tests/test_sound.c` checks the register stream for it.
 
 It changes with time of day (night is slower and lower). There are footsteps for each
 terrain and sfx for lighting, building, gliding, whiteout, and dawn. Each lit beacon adds a

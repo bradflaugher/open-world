@@ -53,16 +53,18 @@ def freq_reg(m):
 FREQ = [freq_reg(m) for m in range(MIDI_LO, MIDI_HI + 1)]
 
 # ---------------------------------------------------------------- wavetables
+# Soft pads only: low partials (<= 4th), so no buzz.  High or inharmonic partials (the 7th,
+# 9th, 11th) on a 32-sample, 3-bit-at-50% wave read as a broken, buzzing tone.
 WAVES = [
     # name,   [(harmonic, amplitude, phase)]
-    ("SOFT",   [(1, 1.0, 0), (2, 0.18, 0.3), (3, 0.05, 0)]),                  # sea / shore
-    ("WARM",   [(1, 1.0, 0), (2, 0.45, 0.2), (3, 0.22, 0.5), (4, 0.08, 0)]),   # meadow, title
-    ("HOLLOW", [(1, 1.0, 0), (3, 0.33, 0.1), (5, 0.12, 0.4)]),                # forest
-    ("REED",   [(1, 0.8, 0), (2, 0.25, 0), (3, 0.45, 0.2), (5, 0.3, 0.5), (7, 0.15, 0)]),  # desert
-    ("GLASS",  [(1, 0.45, 0), (4, 0.6, 0.1), (6, 0.45, 0.3), (9, 0.2, 0.6)]),  # tundra: D2 + D4 + A4 + E5
-    ("LOW",    [(n, 1.0 / n ** 1.35, 0) for n in range(1, 9)]),               # rock
-    ("ASH",    [(1, 1.0, 0), (5, 0.3, 0.2), (7, 0.42, 0.7), (11, 0.22, 0.1)]), # ash / glass: 7th + 11th partials
-    ("DARK",   [(1, 1.0, 0), (2, 0.28, 0.4), (3, 0.08, 0), (4, 0.12, 0.2)]),   # ruins
+    ("SOFT",   [(1, 1.0, 0), (2, 0.15, 0.3)]),                                # sea / shore
+    ("WARM",   [(1, 1.0, 0), (2, 0.35, 0.2), (3, 0.12, 0.5)]),                # meadow, title
+    ("HOLLOW", [(1, 1.0, 0), (3, 0.22, 0.1)]),                                # forest
+    ("REED",   [(1, 1.0, 0), (2, 0.3, 0), (3, 0.2, 0.2), (4, 0.06, 0)]),       # desert
+    ("GLASS",  [(1, 1.0, 0), (2, 0.25, 0.1), (4, 0.12, 0.3)]),                # tundra: octave shimmer
+    ("LOW",    [(1, 1.0, 0), (2, 0.4, 0), (3, 0.15, 0)]),                     # rock
+    ("ASH",    [(1, 1.0, 0), (3, 0.18, 0.3), (4, 0.08, 0.1)]),                # ash / glass
+    ("DARK",   [(1, 1.0, 0), (2, 0.28, 0.4), (3, 0.08, 0)]),                  # ruins
 ]
 
 
@@ -124,25 +126,28 @@ class S:
 
 CH1, CH2, CH4 = 1, 2, 8
 
-# steps: (variants) — tiny, soft, randomised by the driver
+# steps: (variants) - tiny, soft, randomised by the driver.  Each is a short percussive
+# envelope (pace 1-2: gone in 30-60 ms) whose colour darkens as it decays, so it lands as a
+# soft footfall instead of a burst of static.  No short-LFSR (0x08) modes: those buzz.
 STEPS = {
-    "STEP_SOFT":  [S().nz(0x22, 0x71).wait(5).end(),
-                   S().nz(0x22, 0x62).wait(5).end(),
-                   S().nz(0x22, 0x63).wait(5).end()],
-    "STEP_SAND":  [S().nz(0x23, 0x31).wait(3).poly(0x41).wait(4).end(),
-                   S().nz(0x23, 0x32).wait(3).poly(0x42).wait(4).end(),
-                   S().nz(0x13, 0x21).wait(3).poly(0x31).wait(4).end()],
-    "STEP_SNOW":  [S().nz(0x31, 0x5D).wait(2).nz(0x21, 0x4C).wait(2).nz(0x11, 0x3D).wait(3).end(),
-                   S().nz(0x31, 0x4D).wait(2).nz(0x21, 0x5C).wait(3).end(),
-                   S().nz(0x21, 0x5E).wait(2).nz(0x21, 0x4D).wait(2).nz(0x11, 0x3C).wait(3).end()],
-    "STEP_STONE": [S().nz(0x20, 0x42, 4).wait(4).end(),
-                   S().nz(0x20, 0x43, 4).wait(4).end(),
-                   S().nz(0x20, 0x51, 3).wait(4).end()],
+    "STEP_SOFT":  [S().nz(0x31, 0x55).wait(1).poly(0x66).wait(1).poly(0x67).wait(2).end(),   # grass: "tuff"
+                   S().nz(0x31, 0x56).wait(1).poly(0x66).wait(1).poly(0x77).wait(2).end(),
+                   S().nz(0x21, 0x45).wait(1).poly(0x56).wait(1).poly(0x67).wait(2).end()],
+    "STEP_SAND":  [S().nz(0x22, 0x44).wait(2).poly(0x45).wait(3).end(),                     # sand: "shff"
+                   S().nz(0x22, 0x34).wait(2).poly(0x45).wait(3).end(),
+                   S().nz(0x22, 0x45).wait(2).poly(0x46).wait(3).end()],
+    "STEP_SNOW":  [S().nz(0x31, 0x45).wait(2).nz(0x21, 0x56).wait(3).end(),                 # snow: "cr-unch"
+                   S().nz(0x31, 0x46).wait(2).nz(0x21, 0x55).wait(3).end(),
+                   S().nz(0x21, 0x45).wait(1).nz(0x31, 0x56).wait(3).end()],
+    "STEP_STONE": [S().nz(0x31, 0x34, 3).wait(3).end(),                                     # stone: "tk"
+                   S().nz(0x31, 0x35, 3).wait(3).end(),
+                   S().nz(0x21, 0x24, 4).wait(3).end()],
 }
 
 
 def sfx_light():
-    s = S().nz(0x0A, 0x55).wait(6)                       # breath of air rising
+    # breath of air rising, in steps: a rising envelope glitches on a live channel
+    s = S().nz(0x10, 0x55).wait(3).nz(0x20, 0x55).wait(3)
     s.p2("D5", 0x55).wait(2)
     s.nz(0x57, 0x45).wait(6).poly(0x56).wait(6)          # flame catches, settles
     s.p2("A5", 0x46).poly(0x66).wait(10).poly(0x67).wait(40)
@@ -151,9 +156,9 @@ def sfx_light():
 
 def sfx_burn():
     s = S()
-    for env, poly, wt in [(0x61, 0x31, 3), (0x41, 0x51, 2), (0x51, 0x21, 4), (0x62, 0x41, 5),
-                          (0x31, 0x31, 3), (0x42, 0x52, 6), (0x21, 0x41, 4), (0x33, 0x61, 8),
-                          (0x21, 0x51, 6), (0x22, 0x62, 10)]:
+    for env, poly, wt in [(0x41, 0x44, 3), (0x31, 0x55, 2), (0x41, 0x45, 4), (0x42, 0x54, 5),
+                          (0x21, 0x45, 3), (0x32, 0x56, 6), (0x21, 0x55, 4), (0x23, 0x66, 8),
+                          (0x21, 0x56, 6), (0x12, 0x67, 10)]:
         s.nz(env, poly).wait(wt)
     return s.end()
 
@@ -166,19 +171,19 @@ def sfx_cairn():
 
 def sfx_stepstone():
     s = S().p2("A4", 0x63, 50).wait(1)
-    for n in ["C5", "E5", "G5", "A5"]:
+    for n in ["B4", "D5", "E5", "A5"]:
         s.f2(n).wait(1)
     s.nz(0x33, 0x32).wait(4).nz(0x23, 0x42).wait(20)
     return s.end()
 
 
 def sfx_pickup():
-    return S().nz(0x21, 0x51).p2("E5", 0x42, 25).wait(4).p2("A5", 0x43, 25).wait(16).end()
+    return S().nz(0x21, 0x55).p2("E5", 0x42, 50).wait(4).p2("A5", 0x43, 50).wait(16).end()
 
 
 def sfx_glide():
     s = S()
-    for v, p in [(1, 0x55), (2, 0x54), (3, 0x44), (4, 0x43), (4, 0x43), (3, 0x44), (2, 0x54), (1, 0x55)]:
+    for v, p in [(1, 0x56), (2, 0x55), (3, 0x45), (3, 0x44), (3, 0x44), (3, 0x45), (2, 0x55), (1, 0x56)]:
         s.nz(v << 4, p).wait(5)
     return s.nz(0x13, 0x56).wait(4).end()
 
@@ -188,7 +193,8 @@ def sfx_land():
 
 
 def sfx_no():
-    return S().p2("D3", 0x42, 25).wait(7).p2("C#3", 0x42, 25).wait(10).end()
+    # a soft falling fourth ("uh-uh"), in key: a refusal, not an error buzzer
+    return S().p2("A4", 0x32, 50).wait(6).p2("E4", 0x33, 50).wait(12).end()
 
 
 def sfx_item():
@@ -199,7 +205,8 @@ def sfx_item():
 
 
 def sfx_beacon():
-    s = S().nz(0x0C, 0x66).wait(18)                       # the column of light draws breath
+    s = S().nz(0x10, 0x66).wait(5).nz(0x20, 0x66).wait(5)   # the column of light draws breath
+    s.nz(0x30, 0x66).wait(4).nz(0x40, 0x66).wait(4)
     s.nz(0x57, 0x55).p1("D3", 0x97, 50).p2("A3", 0x87, 50).wait(12)
     s.poly(0x66).wait(10).poly(0x77).wait(8)
     s.p2("D5", 0x77).wait(24).p2("A5", 0x67).wait(6)
@@ -222,12 +229,12 @@ def sfx_heart():
 
 def sfx_whiteout():
     s = S()
-    s.p2("A5", 0x57, 12)
-    for v in range(1, 8):
-        s.nz(v << 4, 0x21 if v < 5 else 0x31).wait(3)
-        if v in (2, 4, 6):
-            s.f2(["G#5", "F#5", "E5"][v // 2 - 1])
-    s.nz(0x77, 0x31)
+    s.p2("A5", 0x47, 50)
+    for v in range(1, 5):
+        s.nz(v << 4, 0x56 if v < 3 else 0x45).wait(4)
+        if v in (2, 3, 4):
+            s.f2(["G5", "F#5", "E5"][v - 2])
+    s.nz(0x47, 0x56)
     for n in ["D5", "C#5", "B4", "A4"]:
         s.wait(6).f2(n)
     return s.wait(40).end()
@@ -238,20 +245,20 @@ def sfx_dawn():
 
 
 def sfx_select():
-    return S().p2("A5", 0x31, 25).wait(6).end()
+    return S().p2("A5", 0x21, 50).wait(3).p2("D6", 0x22, 50).wait(8).end()
 
 
 def sfx_map():
     s = S()
-    for env, poly, wt in [(0x31, 0x21, 3), (0x21, 0x11, 2), (0x31, 0x22, 4), (0x21, 0x12, 6)]:
+    for env, poly, wt in [(0x21, 0x34, 3), (0x11, 0x24, 2), (0x21, 0x35, 4), (0x11, 0x25, 6)]:
         s.nz(env, poly).wait(wt)
     return s.end()
 
 
 def sfx_thunder():
-    s = S().nz(0x81, 0x31).wait(3)
-    s.nz(0x87, 0x75).wait(10).poly(0x76).wait(12).poly(0x77).wait(14).poly(0x87).wait(20)
-    s.nz(0x57, 0x86).wait(20).poly(0x97).wait(40)
+    s = S().nz(0x51, 0x44).wait(3)
+    s.nz(0x67, 0x75).wait(10).poly(0x76).wait(12).poly(0x77).wait(14).poly(0x87).wait(20)
+    s.nz(0x47, 0x86).wait(20).poly(0x97).wait(40)
     return s.end()
 
 
