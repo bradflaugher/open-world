@@ -60,7 +60,25 @@ extern uint8_t hints;
 extern uint8_t lesson_req;           /* IT_x + 1: show that item's lesson (a shrine was taken) */
 void lesson_screen(uint8_t it) BANKED;   /* sets the item's hint bit once it has played through */
 uint8_t lesson_owed(void) BANKED;        /* IT_x + 1 for an item carried but never taught, or 0 */
-extern uint8_t band_mark_x[5];
+extern uint8_t band_mark_x[6];
+extern uint16_t cam_px, cam_py;      /* the view's top-left and the foot in world pixels (they */
+extern uint16_t pl_px, pl_py;        /* wrap every 4096 cells: use differences only) */
+
+/* wisps (lights to gather; each becomes a star) and the small lives: life.c */
+#define WISP_KEEP 32                 /* chunks remembered as emptied, per world (a power of 2) */
+#define STARS_BASE 3                 /* stars in the sky before any wisp */
+extern uint8_t stars;                /* wisps gathered, ever (saved; kept across worlds) */
+extern volatile uint8_t stars_new;
+extern uint16_t wisp_got_x[WISP_KEEP], wisp_got_y[WISP_KEEP];
+extern uint8_t wisp_got_n, wisp_got_i;
+extern volatile uint8_t wisp_on;     /* the nearest wisp is known: wisp_x, wisp_y */
+extern uint16_t wisp_x, wisp_y;
+extern uint8_t wisp_rise;
+void wisp_task(void) BANKED;         /* main loop: look for the nearest wisp */
+void wisps_clear(void) BANKED;       /* a new world */
+void wisps_rescan(void) BANKED;
+void life_update(void) BANKED;       /* game frame: wisp, birds, fireflies */
+void life_reset(void) BANKED;
 
 /* test hooks */
 extern uint16_t dbg_seed;            /* non-zero: seed for the next new world */

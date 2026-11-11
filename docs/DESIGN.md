@@ -54,7 +54,8 @@ direction you are facing, and it turns smoothly when you turn. It contains:
 - a sky whose colour follows the time of day, with stars at night;
 - a distant mountain silhouette from low-frequency noise of `(seed, bearing)`;
 - markers for the **Beacons** (dark pillar when unlit, a column of light when lit), the
-  **Heart** (once revealed), and your nearest cairn.
+  **Heart** (once revealed), and your nearest cairn;
+- a glint low on the ridge at the bearing of the nearest **wisp**.
 
 **The band is the compass.** Nothing in the game needs a text hint (the pictograms are in §5). On CGB the band has its
 own sky palettes (gradient rows via attributes).
@@ -104,6 +105,20 @@ own sky palettes (gradient rows via attributes).
   (bridges and passes, so every set piece is reachable; the host tests prove it with a BFS),
   but on open land only about 30% of it shows. It is a buried road you find and follow. A
   cold fire stands beside it every 64 metatiles.
+
+**Wisps.** One 16x16-metatile chunk in four rolls a wisp (a hash of the chunk and the seed
+through the core's permutation table, `life.c wisp_roll`), at a cell inside the chunk; it is
+there if that cell is open and so is one of the four beside it (about one chunk in eight). A
+wisp is a light hanging over the ground. Walking into it gathers it: it rises into the band and
+is a star from then on. The sky starts with 3 stars and holds 28; the count is saved and kept
+across worlds. The chunks emptied in this world are remembered (the last 32). The main loop
+looks for the nearest wisp in the 7x7 chunks round the wanderer, a little per frame (it asks the
+world core, whose caches belong to the land streamer), and the band shows it. This is the small
+goal between the large ones: there is always a light a little off the road.
+
+**Small lives.** By day one bird stands on open ground near the edge of the view and takes off
+when you come within two cells. On clear nights fireflies drift over grass. They use two of the
+weather's sprites, so they are out only when nothing is falling.
 
 **Mods.** A small table of `(mx, my, metatile)` overrides holds world state: lit fires, lit
 beacons, taken shrines, placed cairns, stepping stones and burnt brambles. It is saved to
@@ -188,10 +203,14 @@ sight. They are never explained.
 
 ## 8. Map (START)
 
-A map at 1 px per chunk (1 chunk = 16x16 metatiles), covering about +/-1024 metatiles around
-the start. Only **visited chunks** are drawn, with biome shading. Everything
-else is fog. Beacons, the Heart (once revealed), cairns and the player are sprites. It renders
-progressively ("surveying"), with the LCD on.
+A chart at 2 px per chunk (1 chunk = 16x16 metatiles): 64 x 56 chunks (about +/-500 metatiles)
+centred on the wanderer, out of the +/-1024 the game remembers. Only **visited chunks** are
+drawn, with biome shading. Everything else is fog. Beacons, the Heart (once revealed), cairns
+and the player are sprites; a beacon or the Heart that is off the chart is pinned to its edge.
+The causeway to each **lit** beacon is drawn as a dotted line from the first fire, and the one
+to the Heart once it is revealed: after the third beacon the map says, without a word, that
+there is a road to the Heart from where you woke. It renders progressively ("surveying"), with
+the LCD on; the pad is read in the VBlank meanwhile, so a tap is never lost.
 
 ## 9. Sound
 
@@ -225,7 +244,15 @@ Two copies of a checksummed save block hold:
 - the cairns list;
 - the visited-chunk bitmap (128x128 bits = 2 KB);
 - worlds completed;
-- the hints already shown (version 3 appends this one byte, so a version 2 save still loads).
+- the hints already shown (version 3 appends this one byte, so a version 2 save still loads);
+- the stars gathered and the wisp chunks emptied in this world (version 4 appends these; version
+  2 and 3 saves still load, with nothing gathered).
+
+Loading clamps every field, keeps only the edits the game itself makes (and only where it
+makes them: nothing but a lit beacon may cover a beacon, and the beacon bits follow the land),
+and a position inside something solid steps out to open ground (to the first fire if there is
+none within three cells), so a copy that passes its checksum with odd contents
+(or comes from a build whose world differed) still plays.
 
 It saves automatically when you light a fire, light a beacon, or build a cairn.
 
@@ -248,12 +275,35 @@ worlds completed.
 Your cairns carry into the new world as ancient cairns, placed at the same offsets from the
 start.
 
+## 13. Hardware rules (what an emulator forgives and a Game Boy does not)
+
+- **VRAM and CGB palettes are written only in VBlank or HBlank.** A write during mode 3 is
+  dropped. The VBlank handler does not start at line 144 sharp (the OAM DMA and the scroll latch
+  come first, about three lines), so it never does a fixed amount of work: the queue drains in
+  `isr.s` start an entry only while LY is 144-152, a palette upload or an animated tile waits a
+  frame if there is no room, and each routine reads STAT after its last write and counts in
+  `dbg_vram_late` if that was not mode 1. The land is drained before the band's stars, and
+  water-edge fix-ups and edits before whole columns.
+- **Main-loop writes with the LCD on** (title, world tiles, map, lessons, refill) go through
+  `vram_put`: wait for mode 0/1 with interrupts on, then check again with them off and write two
+  bytes at once. GBDK's `set_tiles` / `set_bkg_data` / `set_sprite_data` are not used: an
+  interrupt between their STAT check and their write (the VBlank handler runs the sound engine
+  and can return after the VBlank) lands the write in mode 3.
+- **The camera gate** in `world_frame` sees a moved window only once the water-edge fix-ups of
+  the line behind the new column are queued (`land_gx0` / `land_gy0`), so the wanderer never walks into shore edges that were
+  drawn before their neighbours were known.
+- **Ten sprites per line**: the wisp's band glint sits on the band's last rows, clear of the
+  lines the warmth pips share with the five markers; fireflies hide under the lantern glow while
+  a Watcher stands; the tests count real OAM.
+
 ## Module map
 
 ```
 src/core/   portable C (SDCC + gcc): hash/noise, biomes, set pieces, mods, reachability
-src/gb/     GBDK front-end: ISRs, streaming ring, band, sprites, game states, save, sound
+src/gb/     GBDK front-end: ISRs, streaming ring, band, sprites, game states, save, sound,
+            wisps and small lives (life.c)
 assets/     ASCII art (tiles, metatiles, sprites, palettes) -> tools/gen_assets.py -> src/gb/assets.c
 tools/      gen_assets.py, owgen.c (host CLI: render a region / stats / reachability)
-tests/      test_core.c, test_sound.c, test_assets.py, test_rom.py (PyBoy, DMG + CGB)
+tests/      test_core.c, test_sound.c, test_assets.py, test_rom.py (PyBoy, DMG + CGB),
+            test_vram.py (VRAM against the world every frame; PyBoy + mGBA), test_perf.py
 ```

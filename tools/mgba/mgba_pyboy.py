@@ -110,5 +110,7 @@ class MgbaBoy:
         except Exception:
             pass
         self.p.wait()
+        self.p.stdin.close()
+        self.p.stdout.close()
         if self._sav:
             os.remove(self._sav)

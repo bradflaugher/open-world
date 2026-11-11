@@ -49,7 +49,8 @@ def profile(pb):
         lo += 1
     return {'pmax': dict(zip(PF, pmax)), 'worst': dict(zip(PF, worst)), 'hist': hist,
             'stack_free': lo - end, 'drops': u16('dbg_frame_drops'), 'nest': u16('dbg_nest'),
-            'stalls': u16('dbg_stalls'), 'frames': u16('dbg_world_frames')}
+            'stalls': u16('dbg_stalls'), 'frames': u16('dbg_world_frames'),
+            'vram_late': u16('dbg_vram_late')}
 
 
 def stress(g):
@@ -99,6 +100,7 @@ class PerfBase:
         self.assertGreater(r['frames'], 5000, 'the stress did not run')
         self.assertEqual(r['hist'][16], 0, 'a game frame ran into the next frame')
         self.assertEqual(r['drops'], 0, 'game frames were dropped')
+        self.assertEqual(r['vram_late'], 0, 'VBlank VRAM work ran past the VBlank (dropped on hardware)')
         self.assertEqual(r['nest'], 0, 'a VBlank interrupt arrived inside the game frame')
         self.assertLessEqual(r['pmax']['end'], END_MAX[self.cgb],
                              f'worst VBlank work end {r["pmax"]["end"]} lines (worst frame {r["worst"]})')

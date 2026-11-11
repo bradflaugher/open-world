@@ -16,6 +16,7 @@ uint16_t pl_mx, pl_my;
 uint8_t pl_sx, pl_sy;
 uint16_t cam_mx, cam_my;
 uint8_t cam_sx, cam_sy;
+uint16_t cam_px, cam_py, pl_px, pl_py;
 int8_t pl_lift;
 uint16_t tod, day_count;
 uint8_t phase = 0xFF, weather, biome_here;
@@ -104,7 +105,7 @@ static uint8_t rnd8(void)
 #define EQ_N 8
 static uint16_t eq_x[EQ_N], eq_y[EQ_N];
 static uint8_t eq_mt[EQ_N];
-static volatile uint8_t eq_head, eq_tail;
+volatile uint8_t eq_head, eq_tail;      /* (not static: the tests look) */
 volatile uint8_t save_req;
 #define EQ_REMOVE 0xFF
 
@@ -250,6 +251,10 @@ void camera_update(void) BANKED
     cam_my = (uint16_t)(pl_my - 4);
     if (sy < 0) { sy += 16; cam_my--; }
     cam_sy = (uint8_t)sy;
+    cam_px = (uint16_t)((cam_mx << 4) | cam_sx);
+    cam_py = (uint16_t)((cam_my << 4) | cam_sy);
+    pl_px = (uint16_t)((pl_mx << 4) | pl_sx);
+    pl_py = (uint16_t)((pl_my << 4) | pl_sy);
     if (shake) {
         uint8_t r = rnd8();
         shake_x = (int8_t)((r & 1) ? (shake >> 1) + 1 : -(int8_t)((shake >> 1) + 1));
@@ -293,6 +298,7 @@ static void phase_update(uint8_t instant)
         if (p == PH_DAWN && !instant) { __critical { sfx_play(SFX_DAWN); } }
     }
     t = (uint8_t)(p == PH_NIGHT || p == PH_DUSK);
+    if (stars_new) { stars_new = 0; stars_shown = 0xFF; }      /* one more star in the sky */
     if (t != stars_shown && band_stars(t)) stars_shown = t;
     t = into >= PHASE_BLEND ? 16 : (uint8_t)(into >> 6);
     if (instant) t = 16;
@@ -449,13 +455,14 @@ static void bg_task(void)
     case 0: phase_update(0); break;
     case 1: case 5: band_bearing_task(); break;
     case 2: case 6: scan_warm_maybe(); break;
-    case 3: if (f & 8) visit_mark(); break;
+    case 3: if (f & 8) visit_mark(); else wisp_task(); break;
     case 4: warm6 = warm_within(6); break;
     case 7:
         switch ((f >> 3) & 3) {
         case 0: biome_update(); break;
         case 1: weather_update(); break;
         case 2: ambient_update(); break;
+        default: wisp_task(); break;
         }
         break;
     }
@@ -463,6 +470,34 @@ static void bg_task(void)
 }
 
 /* ---------------------------------------------------------------- transitions */
+/* Put the wanderer on open ground beside (x, y): south of it if that is free (the usual place
+ * to wake by a fire), else the nearest free cell round it. One fire in forty has water, a tree
+ * or a crag to its south, and waking inside that was a trap with no way out. Main loop only. */
+static const int8_t wake_dx[8] = { 0, 1, -1, 0, 1, -1, 1, -1 };
+static const int8_t wake_dy[8] = { 1, 0, 0, -1, 1, 1, -1, -1 };
+static void place_beside(uint16_t x, uint16_t y)
+{
+    uint8_t i, r;
+    for (r = 1; r <= 3; r++) {
+        for (i = 0; i < 8; i++) {
+            uint16_t cx = (uint16_t)(x + wake_dx[i] * (int8_t)r), cy = (uint16_t)(y + wake_dy[i] * (int8_t)r);
+            if (!(mt_flags[world_mt(cx, cy)] & MTF_SOLID)) { player_place(cx, cy); return; }
+        }
+    }
+    /* nothing open within three cells: (x, y) is no fire of this world (a damaged save put it
+       in the middle of the sea). The first fire always has open ground to its south. */
+    respawn_x = world.start.x;
+    respawn_y = world.start.y;
+    player_place(world.start.x, (uint16_t)(world.start.y + 1));
+}
+
+/* A loaded position that is inside something solid (a save from a build whose world differed
+ * there, or damaged in a way the checksum missed): step out to the nearest open cell. */
+static void unstick(void)
+{
+    if (mt_flags[world_mt(pl_mx, pl_my)] & MTF_SOLID) place_beside(pl_mx, pl_my);
+}
+
 static void new_world(uint16_t seed)
 {
     world_init(seed);
@@ -476,6 +511,7 @@ static void new_world(uint16_t seed)
     tod = 600;          /* early dawn */
     day_count = 0;
     cairn_n = 0;
+    wisps_clear();
     memset(visited, 0, sizeof visited);
     respawn_x = world.start.x;
     respawn_y = world.start.y;
@@ -529,6 +565,8 @@ void world_enter(uint8_t fresh) BANKED
     band_reset_angle();
     fx_redraw();
     watchers_reset();
+    life_reset();
+    wisps_rescan();
     hint_on = 0;              /* the hints are worked out again by the first game frame */
     run_hint_on = 0;
     scan_warm();
@@ -553,7 +591,7 @@ static void whiteout(void)
     pl_state = PL_STAND;
     fade_to(16, 1);
     wait_frames(60);
-    player_place(respawn_x, (uint16_t)(respawn_y + 1));
+    place_beside(respawn_x, respawn_y);
     pl_face = D_N;
     pl_state = PL_SLEEP;
     tod = 600;
@@ -605,7 +643,7 @@ static void ending(void)
     for (i = 0; i < 16; i++) { pal_fade = (uint8_t)(i + 1); pal_apply(); wait_frames(6); }
     hide_sprites_from(0);
     wait_frames(60);
-    worlds_done++;
+    if (worlds_done < 255) worlds_done++;      /* the tally never wraps back to nothing */
     carry_cairns();
     new_world(fresh_seed());
     save_write();
@@ -657,8 +695,8 @@ void world_frame(void) BANKED
        the view must stay off the outer half of the window's edge columns / rows, which are
        provisional (their far neighbours are not loaded, so their water edges are not final),
        with 2 px for this frame's move and some for the VBlank queue. */
-    rx = (int16_t)(((int16_t)(cam_mx - land_x0) << 4) + cam_sx);
-    ry = (int16_t)(((int16_t)(cam_my - land_y0) << 4) + cam_sy);
+    rx = (int16_t)(((int16_t)(cam_mx - land_gx0) << 4) + cam_sx);
+    ry = (int16_t)(((int16_t)(cam_my - land_gy0) << 4) + cam_sy);
     if (rx < 0 || rx > 88 || ry < 0 || ry > 128) {
         carry_pressed = (uint8_t)(pressed & (J_A | J_SELECT));
         request(REQ_REFILL);
@@ -688,6 +726,7 @@ void world_frame(void) BANKED
     PSTAGE(PF_DRAW);
     dbg_stage = 5;
     fx_update();
+    life_update();
     PSTAGE(PF_FX);
     dbg_stage = 6;
     frame_commit();
@@ -755,7 +794,8 @@ static void world_run(void)
                 uint8_t f = pl_face & 7;
                 if (!land_prefetch(fdx[f], fdy[f])) { __asm__("halt"); __asm__("nop"); }
             }
-            else if (r == 1) request(REQ_REFILL);
+            /* (the game frame may have asked for the map or a whiteout meanwhile: that stands) */
+            else if (r == 1) { __critical { if (!world_req) request(REQ_REFILL); } }
         }
         while (hook_busy) { __asm__("halt"); __asm__("nop"); }
         dbg_count_on = 0;
@@ -784,6 +824,8 @@ static void world_run(void)
             land_refill(cam_mx, cam_my);
             band_reset_angle();
             scan_warm();
+            life_reset();
+            wisps_rescan();
             dbg_teleport = 0;
             break;
         case REQ_REFILL:
@@ -952,6 +994,7 @@ void game_main(void) BANKED
         choice = title();
         if (choice == 1 && save_load()) {
             pl_state = PL_SLEEP;
+            unstick();
             if (items & (1 << IT_STONES)) stones = STONES_MAX;   /* older saves: the pouch is endless now */
             heart_revealed = (uint8_t)(beacons_lit == 7);
             ambient_seed(world.seed);

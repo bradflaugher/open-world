@@ -217,3 +217,25 @@ learnable with no text. The new shore foam reads well on both models. Watchers s
   python3 tools/qa_edgecases.py; python3 tools/qa_edgecases.py --cgb
   OW_SLOW=1 python3 -m unittest tests/test_playthrough.py -v
   ```
+
+## Addendum: hardware-correctness and play review (2026-11)
+
+A later review round, after the fixes above had shipped. What it found, each confirmed in an
+emulator before it was fixed, and each with a test that fails on the build before:
+
+| Finding | How it was confirmed | Fix |
+|---|---|---|
+| **DMG: stale land tiles while running.** The VBlank drain of the land queue ran past the VBlank (it starts about 3 lines in and 8 entries take 5 more); PyBoy and mGBA, like hardware, drop VRAM writes in mode 3. | `tests/test_vram.py` on the old build: e.g. cell (32804, 32787) kept the tiles of the cell 16 columns before it from frame 60 of running east, for good. `test_stream_matches_host_walking` also failed on it. | `isr.s`: entries start only while LY is 144-152; palettes and animated tiles likewise. |
+| **Waking inside water or a tree.** 77 of 3087 fires (12 seeds) have a solid cell to their south, where a whiteout put the wanderer. | Host scan of the generator, then in the ROM: seed 0x1234, the fire at (32632, 32893): woke in the sea at (32632, 32894), no move possible. | Wake on the nearest open cell beside the fire. |
+| **A tap of START during the map survey was lost** (the map stayed open). | 2-3 frame taps at 0-20 frames after opening, DMG and CGB. | The VBlank reads the pad while the map is open. |
+| **A map / whiteout request could be overwritten** by the main loop's refill request. | Code review (a one-instruction window). | Checked with interrupts off. |
+| **Shore edges drawn before their neighbours were known showed for a frame or two** at the screen edge when running diagonally on a DMG. | `tests/test_vram.py` on mGBA DMG. | The camera gate sees a moved window only once the fix-ups are queued, and they go to the front of the queue. |
+| **GBDK's VRAM copy routines can be split from their STAT check by an interrupt.** | Code review; the VBlank handler is measured to return after the VBlank on frames with heavy sound work. Not reproduced as a visible glitch. | Own writer: re-check with interrupts off, write at once. |
+| A save with a valid checksum and nonsense contents was loaded as it was. | Crafted saves. | Every field clamped; bad mods dropped; a position inside something solid steps out. |
+
+Play: the walk between beacons had nothing in it but terrain, the map was a few pixels in the
+middle of an empty sheet, the leg to the Heart gave no hint of a way round the seas (the
+compass-only pilot spent 25 minutes on it and gave up), and nothing in the land moved. Added:
+wisps and the sky that fills with them, a map centred on the wanderer with the earned roads on
+it, birds and fireflies. See the README.
+

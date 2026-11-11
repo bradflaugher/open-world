@@ -101,6 +101,17 @@ extern const uint16_t title_pal[8][4];
 extern const uint8_t map_tiles[];
 ```
 
+Sprites appended after the contract's (their constants are generated too): `SPR_HINT_B`,
+`SPR_HINT_SEL` (24x16), `SPR_WISP0` / `SPR_WISP1` (a wisp, two frames), `SPR_BAND_WISP` (its
+glint on the band: drawn in the sprite's top rows, placed on band lines 17-23), `SPR_BIRD_SIT`
+(a bird on the ground; `SPR_BIRD0` / `SPR_BIRD1` fly), `SPR_FIREFLY`. Sprite tiles must stay
+below 126 (`SPR_SHADOW` is generated there).
+
+**VRAM rule:** nothing outside `isr.s` writes VRAM directly while the LCD is on. Main-loop code
+uses `vram_put` / `set_tiles` / `set_bkg_data` / `set_sprite_data` as declared in `gfx.h` (which
+replaces GBDK's with interrupt-safe ones); game-frame code (it runs in the VBlank interrupt)
+queues through `bq_push` / `vq_push` / `land_set`.
+
 **Art rule:** colour index 0 is LIGHT (fire, beacons, stars, glints and glow). Ground mostly
 uses index 1, detail uses 2 and deep shadow uses 3. The night palette crushes 1, 2 and 3
 towards black and keeps 0 bright, so at night only light stays light.

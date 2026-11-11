@@ -26,6 +26,7 @@ void split_enable(uint8_t on);
 /* ---- VRAM queues, drained in VBlank ---- */
 /* land metatile writes: ring slot (0..15, 0..15) of map 0x9800, its 4 tiles (attrs from mt) */
 void bq_push(uint8_t col, uint8_t row, uint8_t mt, const uint8_t *t);
+void bq_push_front(uint8_t col, uint8_t row, uint8_t mt, const uint8_t *t);   /* ... drained first */
 uint8_t bq_pending(void);
 extern uint8_t scratch[160];           /* main-loop transient buffer (refill, map screen) */
 /* single tile (+CGB attribute) writes anywhere in the BG maps */
@@ -33,9 +34,23 @@ void vq_push(uint16_t addr, uint8_t tile, uint8_t attr);
 uint8_t vq_pending(void);
 void vram_flush(void);                    /* wait until both queues are empty */
 
+/* ---- main-loop VRAM writes: safe with the LCD on even if an interrupt arrives (isr.s).
+   GBDK's own set_tiles / set_bkg_data / set_sprite_data check STAT and then write with
+   interrupts enabled, so they are replaced throughout. Never call these from an ISR. ---- */
+void vram_put(uint8_t *dst, const uint8_t *src, uint16_t n);
+void vram_tiles(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t *base, const uint8_t *src);
+void bkg_data(uint8_t first, uint8_t n, const uint8_t *src);
+void spr_data(uint8_t first, uint8_t n, const uint8_t *src);
+#define set_tiles vram_tiles
+#define set_bkg_data bkg_data
+#define set_sprite_data spr_data
+
 extern uint8_t mt_t[];                    /* RAM copies of mt_tiles / mt_attr: MT_COUNT * 4 */
 extern uint8_t mt_a[];
 extern volatile uint8_t anim_on;
+/* pad_watch = 1: the VBlank reads the pad every frame; pad_now is what is held, pad_hits the
+   buttons newly pressed since it was last cleared (clear it with interrupts off) */
+extern volatile uint8_t pad_watch, pad_now, pad_hits;
 extern volatile uint8_t hook_on, hook_busy;   /* VBL runs world_frame() while hook_on */
 
 /* ---- palettes ---- */
@@ -93,8 +108,10 @@ void spr_set_f(uint8_t i, uint8_t x, uint8_t y, uint8_t tile, uint8_t prop);
 #define SP_PIPS     17  /* 4 */
 #define SP_ICON     21
 #define SP_MARK     22  /* 5: beacons 0-2, heart, cairn */
-#define SP_WX       27  /* 13 weather */
-#define NUM_WX      13
+#define SP_WX       27  /* 11 weather (the first two are birds / fireflies when nothing falls) */
+#define NUM_WX      11
+#define SP_TWINK    38  /* the nearest wisp on the band */
+#define SP_WISP     39  /* the wisp in the land */
 #define NUM_SPR     40
 
 #endif

@@ -41,32 +41,62 @@ _stat_isr::
     pop af
     reti
 
+; ---- VBlank VRAM work ----
+; Every routine here runs from the VBlank handler with interrupts off and must finish inside
+; the VBlank: on hardware a VRAM (or CGB palette) write during mode 3 is simply dropped, which
+; leaves a stale tile on screen for good. The handler does not start at line 144 sharp (the
+; OAM DMA and the scroll latch come first, and a critical section can hold the interrupt off),
+; so a fixed number of entries per frame is not safe: each queue entry is started only while
+; LY is 144..152. An entry takes well under a line at either CPU speed, so the last write
+; lands before line 153 ends. (LY reads 0 for most of line 153: that stops the loop too.)
+rLY   = 0x44
+VB_LAST = 9                 ; entries start while LY - 144 < VB_LAST
+; The longest entry (a land cell on a DMG) is 76 M-cycles of a 114-cycle line, so a write never
+; lands later than two thirds of the way through line 153. Each routine proves it: right after
+; its last write it reads STAT, and counts in dbg_vram_late if that is not mode 1 (VBlank).
+    .globl _dbg_vram_late
+vb_proof:
+    ldh a,(rSTAT)
+    and a,#3
+    dec a
+    ret z
+    ldh a,(rLCDC)
+    rlca
+    ret nc                  ; LCD off: no modes
+    ld hl,#_dbg_vram_late
+    ld a,(hl)
+    inc a
+    ret z
+    ld (hl),a
+    ret
+
 ; ---- land metatile queue: entry = addr lo, addr hi, mt, t0..t3, pad (32 x 8 bytes) ----
 ; All four tiles of a metatile slot share one 256-byte page (TL low byte <= 222), so only E moves.
 _bq_drain::
     ld a,(_bq_budget)
     ld b,a
-.bq_loop:
     ld a,(_bq_tail)
     ld c,a
-    ld a,(_bq_head)
-    cp a,c
-    ret z
-    ld l,c                  ; hl = bq + tail * 8
+    ld l,a                  ; hl = bq + tail * 8
     ld h,#0
     add hl,hl
     add hl,hl
     add hl,hl
     ld de,#_bq
     add hl,de
-    ld e,(hl)
-    inc hl
-    ld d,(hl)
-    inc hl
-    ld a,(hl+)              ; mt
-    add a,a
-    add a,a
-    ld c,a                  ; mt * 4 (attributes)
+.bq_loop:
+    ld a,(_bq_head)
+    cp a,c
+    jr z,.bq_done
+    ldh a,(rLY)
+    sub a,#144
+    cp a,#VB_LAST
+    jr nc,.bq_done
+    ld a,(hl+)
+    ld e,a
+    ld a,(hl+)
+    ld d,a
+    inc hl                  ; mt (attributes: below)
     ld a,(hl+)              ; the four tiles, from the entry
     ld (de),a
     inc e
@@ -78,20 +108,28 @@ _bq_drain::
     ld a,(hl+)
     ld (de),a
     inc e
-    ld a,(hl)
+    ld a,(hl+)
     ld (de),a
     ld a,(_is_cgb)
     or a,a
     jr z,.bq_next
-    ld a,#1
-    ldh (rVBK),a
+    push hl
+    dec hl
+    dec hl
+    dec hl
+    dec hl
+    dec hl
+    ld a,(hl)               ; mt
+    add a,a
+    add a,a                 ; mt * 4 (MT_COUNT <= 64)
     ld hl,#_mt_a
-    ld a,c
     add a,l
     ld l,a
     adc a,h
     sub a,l
     ld h,a
+    ld a,#1
+    ldh (rVBK),a
     ld a,e
     sub a,#33
     ld e,a
@@ -110,14 +148,25 @@ _bq_drain::
     ld (de),a
     xor a,a
     ldh (rVBK),a
+    pop hl
 .bq_next:
-    ld a,(_bq_tail)
+    inc hl                  ; pad
+    ld a,c
     inc a
     and a,#31
-    ld (_bq_tail),a
+    ld c,a
+    jr nz,.bq_nowrap
+    ld hl,#_bq
+.bq_nowrap:
     dec b
     jr nz,.bq_loop
-    ret
+.bq_done:
+    ld a,c
+    ld (_bq_tail),a
+    ld a,(_bq_budget)
+    cp a,b
+    ret z                   ; nothing written this time: nothing to prove
+    jp vb_proof
 
 ; ---- single tile queue: entry = addr lo, addr hi, tile, attr (32 entries), up to 8 per call ----
 _vq_drain::
@@ -127,7 +176,11 @@ _vq_drain::
     ld c,a
     ld a,(_vq_head)
     cp a,c
-    ret z
+    jr z,.vq_done
+    ldh a,(rLY)
+    sub a,#144
+    cp a,#VB_LAST
+    jr nc,.vq_done
     ld a,c
     add a,a
     add a,a
@@ -159,7 +212,137 @@ _vq_drain::
     ld (_vq_tail),a
     dec b
     jr nz,.vq_loop
+.vq_done:
+    ld a,b
+    cp a,#8
+    ret z                   ; nothing written this time
+    jp vb_proof
+
+; ---- CGB: all 8 palettes (64 bytes) from vb_src to the palette port vb_reg (0x68 BG,
+; 0x6A OBJ). About 1.4 lines at double speed; the caller checks there is room. ----
+    .globl _vb_src, _vb_dst, _vb_reg
+_pal_put::
+    ld a,(_vb_src)
+    ld l,a
+    ld a,(_vb_src+1)
+    ld h,a
+    ld a,(_vb_reg)
+    ld c,a
+    ld a,#0x80              ; index 0, auto-increment
+    ldh (c),a
+    inc c
+    ld b,#16
+1$:
+    ld a,(hl+)
+    ldh (c),a
+    ld a,(hl+)
+    ldh (c),a
+    ld a,(hl+)
+    ldh (c),a
+    ld a,(hl+)
+    ldh (c),a
+    dec b
+    jr nz,1$
+    jp vb_proof
+
+; ---- one animated tile: 16 bytes from vb_src to vb_dst (under a line on a DMG) ----
+_tile_put::
+    ld a,(_vb_src)
+    ld e,a
+    ld a,(_vb_src+1)
+    ld d,a
+    ld a,(_vb_dst)
+    ld l,a
+    ld a,(_vb_dst+1)
+    ld h,a
+    ld b,#4
+1$:
+    ld a,(de)
+    ld (hl+),a
+    inc de
+    ld a,(de)
+    ld (hl+),a
+    inc de
+    ld a,(de)
+    ld (hl+),a
+    inc de
+    ld a,(de)
+    ld (hl+),a
+    inc de
+    dec b
+    jr nz,1$
+    jp vb_proof
+
+; ---- main-loop VRAM writes with the LCD on ----
+; The usual "wait until STAT says mode 0/1, then write" is only safe if nothing can run between
+; the check and the write: an interrupt taken there (the VBlank handler runs the sound engine
+; and can return well after the VBlank) puts the write in mode 3, where hardware drops it.
+; So: wait with interrupts on (so the wait never delays one), then check again with them off
+; and write at once. Two bytes per check: both land within 10 M-cycles of the STAT read, and
+; after the last cycle of an HBlank VRAM stays open for the 20 cycles of mode 2. Interrupts
+; are off for about 12 cycles at a time.
+; mc_n pairs (1..255) from mc_src to mc_dst.
+    .globl _mc_src, _mc_dst, _mc_n
+_vram_pairs::
+    ld a,(_mc_src)
+    ld e,a
+    ld a,(_mc_src+1)
+    ld d,a
+    ld a,(_mc_dst)
+    ld l,a
+    ld a,(_mc_dst+1)
+    ld h,a
+1$:
+    ld a,(de)
+    ld b,a
+    inc de
+    ld a,(de)
+    ld c,a
+    inc de
+2$:
+    ldh a,(rSTAT)
+    and a,#2
+    jr nz,2$
+    di
+    ldh a,(rSTAT)
+    and a,#2
+    jr nz,3$
+    ld (hl),b
+    inc hl
+    ld (hl),c
+    ei
+    inc hl
+    ld a,(_mc_n)
+    dec a
+    ld (_mc_n),a
+    jr nz,1$
     ret
+3$:
+    ei
+    jr 2$
+
+; one byte: mc_n to mc_dst
+_vram_byte::
+    ld a,(_mc_dst)
+    ld l,a
+    ld a,(_mc_dst+1)
+    ld h,a
+    ld a,(_mc_n)
+    ld b,a
+1$:
+    ldh a,(rSTAT)
+    and a,#2
+    jr nz,1$
+    di
+    ldh a,(rSTAT)
+    and a,#2
+    jr nz,2$
+    ld (hl),b
+    ei
+    ret
+2$:
+    ei
+    jr 1$
 
 ; ---- save checksum: a += byte, b += a over cks_len bytes at cks_ptr (13 cycles/byte) ----
     .globl _cks_ptr, _cks_len, _cks_a, _cks_b
