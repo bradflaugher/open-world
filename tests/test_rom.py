@@ -1131,7 +1131,6 @@ class RomTest(Base):
         g.press('a', after=30)
         g.set_u8('items', 7)
         g.set_u8('hints', 7)
-        g.set_u8('beacons_lit', 3)
         g.set_u8('stars', 9)
         g.set_u8('save_req', 1)
         g.run(30)
@@ -1145,7 +1144,7 @@ class RomTest(Base):
         self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 3000))
         self.assertEqual(g.world()['seed'], self.SEED)
         self.assertEqual(g.pos(), pos)
-        self.assertEqual((g.u8('items'), g.u8('hints'), g.u8('beacons_lit')), (7, 7, 3))
+        self.assertEqual((g.u8('items'), g.u8('hints'), g.u8('beacons_lit')), (7, 7, 0))
         self.assertEqual((g.u8('stars'), g.u8('wisp_got_n')), (0, 0))
         self.assertEqual(self.mods().get(g.world()['start']), MT['MT_FIRE_LIT'])
         g.wake()
@@ -1228,6 +1227,7 @@ class RomTest(Base):
         g.face('up')
         g.press('a', after=30)                  # light the fire: a save
         n = g.u16('dbg_save_len')
+        v3 = g.u16('dbg_save_len_v3')
         sram = bytearray(g.sram())
         g.stop()
         for base in (0, 0x1000):
@@ -1239,6 +1239,14 @@ class RomTest(Base):
             sram[h + 16], sram[h + 17], sram[h + 18] = 0xF8, 9, 0xFF                # items, equipped, beacons
             sram[h + 20], sram[h + 21] = 0xFF, 0xFF                                 # warmth
             sram[h + 222 + 4] = 200                                                 # mod 0: not a metatile
+            # edits the game never makes: sea over beacon 0, the stones' shrine emptied though
+            # the stones are not carried, a cairn on the Heart; and one it does make: beacon 1 lit
+            for k, (pos, mt) in enumerate(((w['beacon'][0], 'MT_SEA'), (w['shrine'][0], 'MT_SHRINE_EMPTY'),
+                                           (w['heart'], 'MT_CAIRN'), (w['beacon'][1], 'MT_BEACON_LIT'))):
+                o = h + 222 + 5 * (k + 1)
+                sram[o:o + 5] = bytes((pos[0] & 255, pos[0] >> 8, pos[1] & 255, pos[1] >> 8, MT[mt]))
+            sram[h + 29] = 5                                                        # mod_n
+            sram[h + v3 + 1], sram[h + v3 + 2] = 2, 9                               # wisp ring: n, cursor
             a, b = 0x5A, 0xA5
             for x in sram[base:base + n]:
                 a = (a + x) & 0xFF
@@ -1257,8 +1265,12 @@ class RomTest(Base):
         self.assertLessEqual(g.u16('warmth'), 1023)
         self.assertEqual(g.u8('items'), 1)
         self.assertEqual(g.u8('equipped'), IT_LANTERN)
-        self.assertEqual(g.u8('beacons_lit'), 7)
-        self.assertTrue(all(m < len(MT) for m in self.mods().values()))
+        # only the edit the game could have made is left, and the beacon bits follow the land
+        self.assertEqual(self.mods(), {w['beacon'][1]: MT['MT_BEACON_LIT']})
+        self.assertEqual(g.u8('beacons_lit'), 2)
+        # the ring's cursor is its count until it is full (the next wisp must land where
+        # wisp_taken looks)
+        self.assertEqual((g.u8('wisp_got_n'), g.u8('wisp_got_i')), (2, 2))
         self.assertTrue(self.walkable(self.mt_now(mx, my)), 'loaded inside something solid')
         g.wake()
         for d in ('down', 'right', 'up', 'left'):
@@ -1296,6 +1308,12 @@ class RomTest(Base):
         g.new_world(self.SEED)
         w = g.world()
         g.set_u8('beacons_lit', 1)
+        # two cairns of yours: one a few chunks away, one far off the chart
+        near, far = (w['start'][0] + 70, w['start'][1] - 40), (w['start'][0] + 900, w['start'][1] + 30)
+        for i, c in enumerate((near, far)):
+            g.set_u16('cairns', c[0], i * 4)
+            g.set_u16('cairns', c[1], i * 4 + 2)
+        g.set_u8('cairn_n', 2)
         g.run(4)
         g.press('start', after=10)
         self.assertTrue(g.wait(lambda: g.u8('map_done'), 2000))
@@ -1330,6 +1348,9 @@ class RomTest(Base):
                for i in range(40) if m[0xFE00 + i * 4]}
         for b in w['beacon']:
             self.assertIn((g.spr_tile('SPR_MAP_BEACON'),) + px(b), spr)
+        # the near cairn where it stands; the far one is not pinned to the edge like a beacon
+        self.assertEqual({p for p in spr if p[0] == g.spr_tile('SPR_MAP_CAIRN')},
+                         {(g.spr_tile('SPR_MAP_CAIRN'),) + px(near)})
         g.press('start', after=10)
         self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 1500))
         # the Heart, revealed: its road is drawn, and the Heart itself (off this chart to the
@@ -1358,6 +1379,67 @@ class RomTest(Base):
         self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 1500))
         g.run(10)
         self.check_land('after the map')
+
+    def test_a_save_that_puts_you_and_your_fire_in_the_open_sea(self):
+        # nothing open within three cells: the search beside the "fire" finds nothing, and the
+        # wanderer used to be put into the sea anyway (and again after every whiteout)
+        g = self.g
+        g.new_world(self.SEED)
+        w = g.world()
+        g.face('up')
+        g.press('a', after=30)
+        n = g.u16('dbg_save_len')
+        sx, sy = w['start']
+        reg = host_region(self.SEED, sx - 200, sy - 200, 400, 400)
+        sea = next((x, y) for (x, y), m in sorted(reg.items())
+                   if abs(x - sx) < 190 and abs(y - sy) < 190 and
+                   not any(self.walkable(reg[(x + dx, y + dy)]) for dx in range(-5, 6) for dy in range(-5, 6)))
+        sram = bytearray(g.sram())
+        g.stop()
+        for base in (0, 0x1000):
+            for o in (5, 22):                                   # position, respawn
+                sram[base + o:base + o + 4] = bytes((sea[0] & 255, sea[0] >> 8, sea[1] & 255, sea[1] >> 8))
+            a, b = 0x5A, 0xA5
+            for x in sram[base:base + n]:
+                a = (a + x) & 0xFF
+                b = (b + a) & 0xFF
+            sram[base + n], sram[base + n + 1] = a, b
+        self.g = g = Game(self.CGB, bytes(sram))
+        g.boot_to_title()
+        g.press('a')
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 3000))
+        self.assertEqual(g.pos()[:2], (sx, sy + 1), 'not beside the first fire')
+        self.assertEqual((g.u16('respawn_x'), g.u16('respawn_y')), (sx, sy))
+        g.wake()
+        g.hold(['down'], 20)
+        self.assertNotEqual(g.pos()[:2] + g.pos()[2:], (sx, sy + 1, 8, 12), 'cannot move')
+
+    def test_the_wisp_glint_waits_for_its_own_bearing(self):
+        # a wisp just found used to glint for a moment at the bearing of the one before
+        g = self.g
+        g.new_world(self.SEED)
+        self.assertTrue(g.wait(lambda: g.u8('wisp_on'), 900))
+        first = (g.u16('wisp_x'), g.u16('wisp_y'))
+        w = g.world()
+        shown_new, stale = False, 0
+        for tgt in (w['beacon'][0], w['beacon'][2], w['beacon'][1]):
+            g.set_u16('dbg_tx', tgt[0])
+            g.set_u16('dbg_ty', (tgt[1] + 2) & 0xFFFF)
+            g.set_u8('dbg_teleport', 1)
+            for _ in range(500):
+                g.run(1)
+                wisp = (g.u16('wisp_x'), g.u16('wisp_y'))
+                if g.u8('wisp_on') and 4 <= g.u8('band_mark_x', 5) <= 156:
+                    # (the frame a new wisp is published in still shows the last frame's sprite)
+                    ok = (g.u16('band_wisp_x'), g.u16('band_wisp_y')) == wisp
+                    stale = 0 if ok else stale + 1
+                    self.assertLess(stale, 3, 'the glint is shown at another wisp\'s bearing')
+                    shown_new = shown_new or (ok and wisp != first)
+                else:
+                    stale = 0
+                if g.u8('pl_face') != (g.pb.frame_count // 120) % 4 * 2:
+                    g.press(('up', 'right', 'down', 'left')[(g.pb.frame_count // 120) % 4], hold=1, after=0)
+        self.assertTrue(shown_new, 'no later wisp ever glinted')
 
     def test_no_frame_drops_walking(self):
         g = self.g

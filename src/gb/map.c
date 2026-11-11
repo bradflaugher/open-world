@@ -41,18 +41,21 @@ static uint8_t half_of(uint16_t m, uint16_t s)
     return (uint8_t)d;
 }
 
-/* chart pixel (0..127, 0..111) of a world position; off the chart: pinned to the edge */
+/* chart pixel (0..127, 0..111) of a world position. Returns 1 on the chart; off it, 2 with
+   the position pinned to the chart's edge (for the beacons and the Heart: cairns are only
+   drawn where they stand) */
 static uint8_t map_xy(uint16_t mx, uint16_t my, uint8_t *sx, uint8_t *sy)
 {
     int16_t x = (int16_t)half_of(mx, world.start.x) - (int16_t)((uint16_t)map_ox << 1);
     int16_t y = (int16_t)half_of(my, world.start.y) - (int16_t)((uint16_t)map_oy << 1);
-    if (x < 0) x = 0;
-    if (x > MAP_COLS * 8 - 1) x = MAP_COLS * 8 - 1;
-    if (y < 0) y = 0;
-    if (y > MAP_ROWS * 8 - 1) y = MAP_ROWS * 8 - 1;
+    uint8_t r = 1;
+    if (x < 0) { x = 0; r = 2; }
+    if (x > MAP_COLS * 8 - 1) { x = MAP_COLS * 8 - 1; r = 2; }
+    if (y < 0) { y = 0; r = 2; }
+    if (y > MAP_ROWS * 8 - 1) { y = MAP_ROWS * 8 - 1; r = 2; }
     *sx = (uint8_t)(16 + x);
     *sy = (uint8_t)(16 + y);
-    return 1;
+    return r;
 }
 
 #define VISITED(cx, cy) (visited[((uint16_t)(cy) << 4) | ((cx) >> 3)] & (uint8_t)(1 << ((cx) & 7)))
@@ -190,7 +193,7 @@ static void markers(uint8_t t)
     if (heart_revealed && ((t >> 5) & 3) != 0 && map_xy(world.heart.x, world.heart.y, &sx, &sy))
         if (place(slot, sx, sy, SPR_MAP_HEART, pal)) slot++;
     for (i = 0; i < cairn_n && slot < 40; i++)
-        if (map_xy(cairns[i].x, cairns[i].y, &sx, &sy))
+        if (map_xy(cairns[i].x, cairns[i].y, &sx, &sy) == 1)
             if (place(slot, sx, sy, SPR_MAP_CAIRN, pal)) slot++;
 }
 

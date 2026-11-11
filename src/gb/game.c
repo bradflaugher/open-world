@@ -484,7 +484,11 @@ static void place_beside(uint16_t x, uint16_t y)
             if (!(mt_flags[world_mt(cx, cy)] & MTF_SOLID)) { player_place(cx, cy); return; }
         }
     }
-    player_place(x, (uint16_t)(y + 1));
+    /* nothing open within three cells: (x, y) is no fire of this world (a damaged save put it
+       in the middle of the sea). The first fire always has open ground to its south. */
+    respawn_x = world.start.x;
+    respawn_y = world.start.y;
+    player_place(world.start.x, (uint16_t)(world.start.y + 1));
 }
 
 /* A loaded position that is inside something solid (a save from a build whose world differed

@@ -19,6 +19,7 @@ static uint8_t mark_b[6];           /* cached bearings: beacons, heart, cairn, w
 static uint8_t mark_rr;
 static uint8_t cairn_near = 0xFF;
 uint8_t band_mark_x[6];
+uint16_t band_wisp_x = 0xFFFF, band_wisp_y;   /* the wisp mark_b[5] was worked out for */
 static uint8_t mark_last_a, mark_last_state = 0xFF;
 static uint8_t mark_tile[6], mark_pal[6];   /* tile 0 = hidden */
 
@@ -180,6 +181,9 @@ void band_bearing_task(void) BANKED
             __critical { on = wisp_on; wx = wisp_x; wy = wisp_y; }
             if (!on) { mark_rr = 0; return; }
             b = world_bearing(mx, my, wx, wy);
+            /* the bearing and the wisp it is for, together: the glint shows only for that one */
+            __critical { mark_b[5] = b; band_wisp_x = wx; band_wisp_y = wy; }
+            mark_new = 1;
         }
         break;
     }
@@ -205,8 +209,11 @@ void band_update(void) BANKED
 
     /* markers move only when the band turns or a bearing / state changes */
     i = (uint8_t)(beacons_lit | (heart_revealed << 3) | ((cairn_near != 0xFF) << 4));
-    /* the nearest wisp glints on the far ridge (not while it rises: it is in your hands) */
-    if (wisp_on && !wisp_rise) i |= (uint8_t)(0x20 | ((vbl_frames & 0x20) << 1));
+    /* the nearest wisp glints on the far ridge (not while it rises: it is in your hands
+    /* ... and not until its own bearing is worked out: a wisp just found would glint for a
+       moment where the last one was) */
+    if (wisp_on && !wisp_rise && band_wisp_x == wisp_x && band_wisp_y == wisp_y)
+        i |= (uint8_t)(0x20 | ((vbl_frames & 0x20) << 1));
     if (a == mark_last_a && i == mark_last_state && !mark_new) return;
     if (FRAME_LATE()) return;
     if (i != mark_last_state) {         /* tiles / palettes only when a state changes */

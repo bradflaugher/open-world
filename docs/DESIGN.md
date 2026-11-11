@@ -248,8 +248,10 @@ Two copies of a checksummed save block hold:
 - the stars gathered and the wisp chunks emptied in this world (version 4 appends these; version
   2 and 3 saves still load, with nothing gathered).
 
-Loading clamps every field and drops mods that are not metatiles, and a position inside
-something solid steps out to open ground, so a copy that passes its checksum with odd contents
+Loading clamps every field, keeps only the edits the game itself makes (and only where it
+makes them: nothing but a lit beacon may cover a beacon, and the beacon bits follow the land),
+and a position inside something solid steps out to open ground (to the first fire if there is
+none within three cells), so a copy that passes its checksum with odd contents
 (or comes from a build whose world differed) still plays.
 
 It saves automatically when you light a fire, light a beacon, or build a cairn.

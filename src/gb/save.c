@@ -38,7 +38,10 @@ uint16_t dbg_save_len_v3 = SAVE_LEN_V3;   /* ... of a version 3 copy (its last b
 uint8_t dbg_saves;
 static save_hdr_t hdr;
 static uint8_t hints_snap;          /* hints, taken with the header: both copies agree */
-static uint8_t stars_snap;
+/* the stars and the ring of emptied wisp chunks, taken together with the header: the game
+   frame gathers wisps while the copies are written, and a copy holding the wisp as taken but
+   the old star count would lose that star at a power cut */
+static uint8_t wisp_snap[WISP_LEN];
 
 /* checksum in isr.s (bank 0): a += byte, b += a */
 const uint8_t *cks_ptr;
@@ -76,11 +79,7 @@ static void write_copy(uint8_t *base, const uint8_t *cairn_snap)
     d = put(d, world_mods, sizeof world_mods);
     d = put(d, visited, sizeof visited);
     *d++ = hints_snap;
-    *d++ = stars_snap;
-    *d++ = wisp_got_n;
-    *d++ = wisp_got_i;
-    d = put(d, wisp_got_x, sizeof wisp_got_x);
-    d = put(d, wisp_got_y, sizeof wisp_got_y);
+    d = put(d, wisp_snap, sizeof wisp_snap);     /* stars, ring count, cursor, the ring */
     c = cks(base, (uint16_t)SAVE_LEN);
     d[0] = (uint8_t)c;
     d[1] = (uint8_t)(c >> 8);
@@ -122,7 +121,11 @@ void save_write(void) BANKED
         hdr.old_n = world_old_cairn_count;
         hdr.mod_n = world_mod_count;
         hints_snap = hints;
-        stars_snap = stars;
+        wisp_snap[0] = stars;
+        wisp_snap[1] = wisp_got_n;
+        wisp_snap[2] = wisp_got_i;
+        memcpy(wisp_snap + 3, wisp_got_x, sizeof wisp_got_x);
+        memcpy(wisp_snap + 3 + sizeof wisp_got_x, wisp_got_y, sizeof wisp_got_y);
     }
     ENABLE_RAM;
     SWITCH_RAM(0);
@@ -164,10 +167,23 @@ uint8_t save_exists(void) BANKED
     return ok;
 }
 
+/* which set piece stands at (x, y): 0-2 a beacon, 3 the Heart, 4 / 5 the stones' / the cloak's
+   shrine, 0xFF none */
+static uint8_t mod_site(uint16_t x, uint16_t y)
+{
+    uint8_t i;
+    for (i = 0; i < NUM_BEACONS; i++)
+        if (world.beacon[i].x == x && world.beacon[i].y == y) return i;
+    if (world.heart.x == x && world.heart.y == y) return 3;
+    for (i = 0; i < 2; i++)
+        if (world.shrine[i].x == x && world.shrine[i].y == y) return (uint8_t)(4 + i);
+    return 0xFF;
+}
+
 uint8_t save_load(void) BANKED
 {
     const uint8_t *s;
-    uint8_t i, k, n;
+    uint8_t i, k, n, bits;
     ENABLE_RAM;
     SWITCH_RAM(0);
     s = which_valid();
@@ -190,7 +206,9 @@ uint8_t save_load(void) BANKED
         memcpy(wisp_got_x, s, sizeof wisp_got_x); s += sizeof wisp_got_x;
         memcpy(wisp_got_y, s, sizeof wisp_got_y);
         if (wisp_got_n > WISP_KEEP) wisp_got_n = WISP_KEEP;
-        wisp_got_i &= WISP_KEEP - 1;
+        /* until the ring is full the cursor is the count (wisp_taken looks at the first n) */
+        if (wisp_got_n < WISP_KEEP) wisp_got_i = wisp_got_n;
+        else wisp_got_i &= WISP_KEEP - 1;
     }
     /* repair whichever copy is damaged (a write torn by a power cut) from the good one */
     if (!copy_valid(SRAM_PRIMARY)) memcpy(SRAM_PRIMARY, SRAM_BACKUP, copy_len(SRAM_BACKUP) + 2);
@@ -217,12 +235,26 @@ uint8_t save_load(void) BANKED
     beacons_lit &= (1 << NUM_BEACONS) - 1;
     world_init(hdr.seed);
     n = hdr.mod_n > MAX_MODS ? MAX_MODS : hdr.mod_n;
+    /* Edits: only what the game itself writes, and only where it writes it. A lit beacon stands
+       on a beacon, an emptied shrine on a shrine whose item is carried, and nothing else may
+       cover a beacon, a shrine or the Heart (that would end the world's progression). */
+    bits = 0;
     for (i = 0, k = 0; i < n; i++) {
-        if (world_mods[i].mt >= MT_COUNT) continue;        /* not a metatile: drop the edit */
+        uint8_t m = world_mods[i].mt, at = mod_site(world_mods[i].x, world_mods[i].y);
+        if (m == MT_BEACON_LIT) {
+            if (at >= NUM_BEACONS) continue;
+            bits |= (uint8_t)(1 << at);
+        } else if (m == MT_SHRINE_EMPTY) {
+            if (at != 4 && at != 5) { if (at != 0xFF) continue; }
+            else if (!(items & (at == 4 ? 1 << IT_STONES : 1 << IT_CLOAK))) continue;
+        } else if (at != 0xFF || (m != MT_FIRE_LIT && m != MT_CAIRN && m != MT_STEPSTONE && m != MT_ASH)) {
+            continue;
+        }
         if (k != i) world_mods[k] = world_mods[i];
         k++;
     }
     world_mod_count = k;
+    beacons_lit = bits;       /* a beacon is lit exactly when its light is in the land */
     world_mods_rebuild();
     return 1;
 }
