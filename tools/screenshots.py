@@ -2,7 +2,7 @@
 
     make rom build/owgen && python3 tools/screenshots.py
 
-Writes {cgb,dmg}_{title,day,dusk,night,rain,snow,hint_run,lesson,hint_select,map,beacon,band,
+Writes {cgb,dmg}_{title,day,wisp,dusk,night,rain,snow,hint_run,lesson,hint_select,map,beacon,band,
 ending}.png (3x) and
 gameplay.gif (a short CGB walk from dusk into night, 2x).
 """
@@ -83,6 +83,18 @@ def shoot(cgb):
     save(g, 'day')
     band = g.pb.screen.image.convert('RGB').crop((0, 0, 160, 24)).resize((160 * 5, 24 * 5), 0)
     save(g, 'band', band)
+    # a wisp, two cells off, and its glint on the band
+    if g.wait(lambda: g.u8('wisp_on'), 900):
+        wx, wy = g.u16('wisp_x'), g.u16('wisp_y')
+        reg = host_region(SEED, wx - 3, wy - 3, 7, 7)
+        for dx, dy in ((-2, 1), (2, 1), (-2, -1), (2, -1), (-3, 0), (3, 0), (0, 3), (0, -3)):
+            if walkable(g, reg[(wx + dx, wy + dy)]):
+                g.teleport(wx + dx, wy + dy)
+                g.set_time(T_DAY + 600)
+                g.run(40)
+                save(g, 'wisp')
+                break
+        g.teleport(w['start'][0] + 1, w['start'][1] + 2)
     g.set_time(T_DUSK + 1100)
     g.run(80)
     save(g, 'dusk')

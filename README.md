@@ -29,6 +29,10 @@ horizon: **the Heart**. Walk to it and sit down. The world dissolves and a new o
 the cairns you built are still standing in it as ancient ruins. Every new world, including the
 one after the Heart, is generated from a fresh seed: new coast, new beacons, new roads.
 
+On the way there are small lights hanging over the ground. Walk into one and it rises into the
+sky: it is a star from then on, in this world and every later one. The night sky starts almost
+empty.
+
 ## The idea
 
 - **Friedrich's *Wanderer above the Sea of Fog*.** A small figure seen from behind, facing
@@ -46,6 +50,8 @@ one after the Heart, is generated from a fresh seed: new coast, new beacons, new
 - **Generative ambient sound** (after Eno). Loops of unequal prime lengths in a different mode
   for each biome, so the music never repeats exactly. Each lit beacon adds a tone. At the Heart
   the tones finally resolve.
+- **Something to walk towards.** The nearest wisp glints on the far ridge of the horizon band.
+  There is always one more out there, a little off the road.
 - **It respects your time.** One beacon fits a 10-20 minute sitting, and the game saves at every
   fire. You can't lose progress: if your warmth runs out, you wake at the last fire you lit.
 
@@ -77,7 +83,7 @@ There is only ever one release: the latest build. Its tag is the build date (`YY
 | **B** (hold) | Run |
 | **A** | Use the item you are holding on whatever is in front of you; next to a fire, sit |
 | **SELECT** | Switch item |
-| **START** | Map (only the places you have walked) |
+| **START** | Map (the places you have walked, and the roads you have earned) |
 | *stand still* | After a few seconds the wanderer sits. Near a fire, time passes quickly. |
 
 On the title screen, **A** continues. To begin a new world over an existing save, **hold SELECT**
@@ -114,6 +120,25 @@ the buttons:
 A finger on an **A** bobs over anything the item in your hand can act on, and a **SELECT** over the
 wanderer means another item you carry would.
 
+### Wisps, the sky and the map
+
+- **Wisps.** Small lights over open ground, at places fixed by the seed. The nearest one twinkles
+  on the horizon band, low on the ridge. Walk into it: two soft notes, it rises, and the night sky
+  has one more star (it begins with three and holds twenty-eight). Stars are saved and stay with
+  you in every later world.
+- **The map** is centred on you, at two pixels per 16×16 cells, so where you have been shows as
+  a trail you can read. A beacon or the Heart that is off the chart is pinned to its edge, in its
+  direction. The ancient road to every beacon you have lit is drawn as a dotted line from the
+  first fire, and the road to the Heart once the Heart is revealed: the way there, without a word.
+- **Small lives.** By day a bird stands in the open and takes off when you come near. On clear
+  nights fireflies drift over the grass.
+
+<p align="center">
+  <img src="docs/screens/cgb_wisp.png" width="240" alt="A wisp over the grass, and its glint on the horizon">
+  <img src="docs/screens/dmg_wisp.png" width="240" alt="The same on an original Game Boy">
+  <img src="docs/screens/dmg_map.png" width="240" alt="The map on an original Game Boy: the road to a lit beacon">
+</p>
+
 ### Warmth, night and weather
 
 - **Warmth.** Four embers at the top left. You lose them at night away from fire, faster on snow,
@@ -146,6 +171,13 @@ water sits *below* the land: a dark wet line along the bank, foam breaking just 
 shelving away through a dither, and the shallows rippling (an animated tile of drifting
 wavelets, which on a DMG is what tells water from ground of the same shade).
 
+**Nothing is written to VRAM while the LCD is drawing.** On hardware (and in PyBoy and mGBA) a
+VRAM or palette write during mode 3 is dropped without a trace, and a stale tile stays on screen.
+So the VBlank routines are cycle-counted assembly that start a queue entry only while LY is
+144-152 and prove after their last write that it was still VBlank; main-loop writes (title,
+map, lessons) re-check STAT with interrupts off and write at once. The tests compare VRAM with
+the world on every frame of a long walk, on both emulators.
+
 **The generator** (`src/core/`) is portable C that builds with both SDCC and gcc:
 - **Terrain.** Integer value noise from a permutation-table hash: two octaves of elevation, plus
   moisture and "strangeness". A biome lookup table turns those into ten biomes: sea, shallows,
@@ -171,7 +203,7 @@ wanderer. It stays within the 10-sprites-per-line limit even in rain, and a test
 It is written to be click-free on real hardware: DACs never switch off, the panning is fixed,
 and volumes move one step at a time (see docs/DESIGN.md §9).
 
-There are 21 sound effects, which borrow channels and hand them back cleanly. The engine uses
+There are 23 sound effects, which borrow channels and hand them back cleanly. The engine uses
 about 300 M-cycles per frame.
 
 ```
@@ -181,6 +213,7 @@ src/core/   portable world core (SDCC + gcc)
 src/gb/     Game Boy front end
   gfx.c isr.s land.c   ISRs, band/land split, streaming ring, blit queue  [bank 0]
   game.c player.c band.c fx.c pal.c map.c watchers.c save.c lesson.c      [banked]
+  life.c               wisps, birds, fireflies                            [banked]
   sound.c sound_core.c   generative ambient engine + sfx
   assets.c      generated tiles, sprites, palettes, title                [banked]
 assets/     hand-editable ASCII-art tiles, sprites, palettes
@@ -199,7 +232,8 @@ make rom          # -> build/open-world.gb (+ .sym)
 make test         # everything below
 make test-host    # C unit tests: world core (~22k checks) + sound engine (~4.8k)
 make test-assets  # asset pipeline
-make test-rom     # PyBoy on DMG + CGB: ROM tests, core equivalence, playthrough
+make test-rom     # PyBoy on DMG + CGB: ROM tests, core equivalence, playthrough, perf, VRAM
+make test-vram    # only: VRAM against the world on every frame (PyBoy; mGBA after `make mgba`)
 make screenshots  # regenerate docs/screens
 ```
 
@@ -235,12 +269,21 @@ build/owgen stats 1 64               # biome mix, distances, reachability over 6
     even in a new world started over the save;
   - whiteout and respawn;
   - the map;
-  - a save round trip, recovery from a torn save, and loading a save from the previous
-    version;
+  - a save round trip, recovery from a torn save, loading saves from the two previous
+    versions, and a save that passes its checksum with nonsense in it;
+  - waking at a fire that has water or a tree to its south;
+  - a wisp is where the seed puts it, shows on the band, is gathered, saved, and is a star;
+  - a bird lands, takes off and leaves; fireflies at night; rain takes the sprites back;
+  - the map's roads and pinned markers, and a tap of START during the survey;
   - the ending;
   - the Watchers;
   - no frame drops;
   - at most 10 sprites per line.
+- **VRAM, DMG and CGB, PyBoy and mGBA** (`tests/test_vram.py`): on every frame of walking,
+  running and gliding in all eight directions, across map toggles, nightfall, rain, storm and
+  fog, each BG tile on screen (and its CGB attribute) is the one the world says is there; no
+  VBlank routine ever writes outside the VBlank; every full-screen load equals the ROM byte for
+  byte.
 - **Playthrough:** an autopilot plays a complete world using **button inputs only**. It
   pathfinds with the host generator and steers by reading the player's position. Every leg is
   timed, and the world has to end with a new one beginning.
