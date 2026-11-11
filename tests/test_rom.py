@@ -1140,6 +1140,86 @@ class RomTest(Base):
             self.assertEqual(sram[base + 2], 3)
             self.assertTrue(save_copy_valid(sram, base, n))
 
+    def test_waking_at_a_fire_with_no_ground_to_its_south(self):
+        # one fire in forty has water, a tree or a crag just south of it, where a whiteout used
+        # to put you: inside it, unable to move
+        g = self.g
+        g.new_world(self.SEED)
+        w = g.world()
+        sx, sy = w['start']
+        reg = host_region(self.SEED, sx - 250, sy - 250, 500, 500)
+        fire = None
+        for (x, y), m in sorted(reg.items()):
+            if m == MT['MT_FIRE_COLD'] and not self.walkable(reg.get((x, y + 1), 0)) and \
+                    any(self.walkable(reg.get((x + dx, y + dy), 0)) for dx, dy in DIRV.values()):
+                fire = (x, y)
+                break
+        self.assertIsNotNone(fire, 'no such fire near the start of this seed')
+        self.stand_next_to(fire)
+        g.press('a', after=10)
+        self.assertEqual(self.mods().get(fire), MT['MT_FIRE_LIT'])
+        g.teleport(*self.open_ground(fire))
+        g.set_time(T_NIGHT + 1100)
+        g.run(40)
+        g.set_u16('warmth', 3)
+        self.assertTrue(g.wait(lambda: g.state() == GS_WHITEOUT, 900))
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 1200))
+        mx, my, _, _ = g.pos()
+        self.assertTrue(self.walkable(self.mt_now(mx, my)), f'woke inside {self.mt_now(mx, my)} at {(mx, my)}')
+        self.assertLessEqual(max(abs(mx - fire[0]), abs(my - fire[1])), 3)
+        g.wake()
+        p0, moved = g.pos(), False
+        for d in DIRV:
+            g.hold([d], 12)
+            moved = moved or g.pos() != p0
+        self.assertTrue(moved, 'cannot move after waking')
+
+    def test_a_damaged_save_that_passes_its_checksum_still_plays(self):
+        g = self.g
+        g.new_world(self.SEED)
+        w = g.world()
+        g.face('up')
+        g.press('a', after=10)                  # light the fire: a save
+        n = g.u16('dbg_save_len')
+        sram = bytearray(g.sram())
+        g.stop()
+        for base in (0, 0x1000):
+            h = base
+            sram[h + 5:h + 9] = bytes((w['start'][0] & 255, w['start'][0] >> 8,
+                                       w['start'][1] & 255, w['start'][1] >> 8))   # inside the fire
+            sram[h + 9], sram[h + 10], sram[h + 11] = 200, 77, 99                   # sx, sy, face
+            sram[h + 12], sram[h + 13] = 0xFF, 0xFF                                 # tod
+            sram[h + 16], sram[h + 17], sram[h + 18] = 0xF8, 9, 0xFF                # items, equipped, beacons
+            sram[h + 20], sram[h + 21] = 0xFF, 0xFF                                 # warmth
+            sram[h + 222 + 4] = 200                                                 # mod 0: not a metatile
+            a, b = 0x5A, 0xA5
+            for x in sram[base:base + n]:
+                a = (a + x) & 0xFF
+                b = (b + a) & 0xFF
+            sram[base + n] = a
+            sram[base + n + 1] = b
+        self.g = g = Game(self.CGB, bytes(sram))
+        g.boot_to_title()
+        g.press('a')
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 3000))
+        mx, my, px, py = g.pos()
+        self.assertLess(px, 16)
+        self.assertLess(py, 16)
+        self.assertLess(g.u8('pl_face'), 8)
+        self.assertLess(g.u16('tod'), 28800)
+        self.assertLessEqual(g.u16('warmth'), 1023)
+        self.assertEqual(g.u8('items'), 1)
+        self.assertEqual(g.u8('equipped'), IT_LANTERN)
+        self.assertEqual(g.u8('beacons_lit'), 7)
+        self.assertTrue(all(m < len(MT) for m in self.mods().values()))
+        self.assertTrue(self.walkable(self.mt_now(mx, my)), 'loaded inside something solid')
+        g.wake()
+        for d in ('down', 'right', 'up', 'left'):
+            g.hold([d], 40)
+        self.assertNotEqual(g.pos()[:2], (mx, my))
+        self.assertEqual(g.state(), GS_WORLD)
+        self.check_land('after a damaged save')
+
     def test_no_frame_drops_walking(self):
         g = self.g
         g.new_world(self.SEED)

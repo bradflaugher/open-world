@@ -463,6 +463,30 @@ static void bg_task(void)
 }
 
 /* ---------------------------------------------------------------- transitions */
+/* Put the wanderer on open ground beside (x, y): south of it if that is free (the usual place
+ * to wake by a fire), else the nearest free cell round it. One fire in forty has water, a tree
+ * or a crag to its south, and waking inside that was a trap with no way out. Main loop only. */
+static const int8_t wake_dx[8] = { 0, 1, -1, 0, 1, -1, 1, -1 };
+static const int8_t wake_dy[8] = { 1, 0, 0, -1, 1, 1, -1, -1 };
+static void place_beside(uint16_t x, uint16_t y)
+{
+    uint8_t i, r;
+    for (r = 1; r <= 3; r++) {
+        for (i = 0; i < 8; i++) {
+            uint16_t cx = (uint16_t)(x + wake_dx[i] * (int8_t)r), cy = (uint16_t)(y + wake_dy[i] * (int8_t)r);
+            if (!(mt_flags[world_mt(cx, cy)] & MTF_SOLID)) { player_place(cx, cy); return; }
+        }
+    }
+    player_place(x, (uint16_t)(y + 1));
+}
+
+/* A loaded position that is inside something solid (a save from a build whose world differed
+ * there, or damaged in a way the checksum missed): step out to the nearest open cell. */
+static void unstick(void)
+{
+    if (mt_flags[world_mt(pl_mx, pl_my)] & MTF_SOLID) place_beside(pl_mx, pl_my);
+}
+
 static void new_world(uint16_t seed)
 {
     world_init(seed);
@@ -553,7 +577,7 @@ static void whiteout(void)
     pl_state = PL_STAND;
     fade_to(16, 1);
     wait_frames(60);
-    player_place(respawn_x, (uint16_t)(respawn_y + 1));
+    place_beside(respawn_x, respawn_y);
     pl_face = D_N;
     pl_state = PL_SLEEP;
     tod = 600;
@@ -605,7 +629,7 @@ static void ending(void)
     for (i = 0; i < 16; i++) { pal_fade = (uint8_t)(i + 1); pal_apply(); wait_frames(6); }
     hide_sprites_from(0);
     wait_frames(60);
-    worlds_done++;
+    if (worlds_done < 255) worlds_done++;      /* the tally never wraps back to nothing */
     carry_cairns();
     new_world(fresh_seed());
     save_write();
@@ -952,6 +976,7 @@ void game_main(void) BANKED
         choice = title();
         if (choice == 1 && save_load()) {
             pl_state = PL_SLEEP;
+            unstick();
             if (items & (1 << IT_STONES)) stones = STONES_MAX;   /* older saves: the pouch is endless now */
             heart_revealed = (uint8_t)(beacons_lit == 7);
             ambient_seed(world.seed);

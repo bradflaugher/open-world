@@ -155,6 +155,7 @@ uint8_t save_exists(void) BANKED
 uint8_t save_load(void) BANKED
 {
     const uint8_t *s;
+    uint8_t i, k, n;
     ENABLE_RAM;
     SWITCH_RAM(0);
     s = which_valid();
@@ -180,8 +181,24 @@ uint8_t save_load(void) BANKED
     worlds_done = hdr.worlds;
     cairn_n = hdr.cairn_n > MAX_CAIRNS ? MAX_CAIRNS : hdr.cairn_n;
     world_old_cairn_count = hdr.old_n > MAX_OLD_CAIRNS ? MAX_OLD_CAIRNS : hdr.old_n;
+    /* a copy can pass its checksum and still hold values this build would never write (bit rot
+       that happens to balance, a save from some other build): nothing below may index a table
+       or leave the wanderer unable to move */
+    pl_sx &= 15; pl_sy &= 15; pl_face &= 7;
+    if (tod >= DAY_FRAMES) tod = 600;
+    if (warmth > WARMTH_MAX) warmth = WARMTH_MAX;
+    if (!warmth) warmth = 1;
+    items = (uint8_t)((items & ((1 << IT_COUNT) - 1)) | (1 << IT_LANTERN));
+    if (equipped >= IT_COUNT || !(items & (1 << equipped))) equipped = IT_LANTERN;
+    beacons_lit &= (1 << NUM_BEACONS) - 1;
     world_init(hdr.seed);
-    world_mod_count = hdr.mod_n > MAX_MODS ? MAX_MODS : hdr.mod_n;
+    n = hdr.mod_n > MAX_MODS ? MAX_MODS : hdr.mod_n;
+    for (i = 0, k = 0; i < n; i++) {
+        if (world_mods[i].mt >= MT_COUNT) continue;        /* not a metatile: drop the edit */
+        if (k != i) world_mods[k] = world_mods[i];
+        k++;
+    }
+    world_mod_count = k;
     world_mods_rebuild();
     return 1;
 }
