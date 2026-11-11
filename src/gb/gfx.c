@@ -78,6 +78,12 @@ static const uint16_t white_pal[32] = {
     0x7FFF,0x7FFF,0x7FFF,0x7FFF, 0x7FFF,0x7FFF,0x7FFF,0x7FFF, 0x7FFF,0x7FFF,0x7FFF,0x7FFF, 0x7FFF,0x7FFF,0x7FFF,0x7FFF
 };
 
+const uint8_t *vb_src;
+uint8_t *vb_dst;
+uint8_t vb_reg;
+uint16_t dbg_vram_late;      /* VBlanks whose VRAM work ran past the VBlank (must stay 0) */
+void pal_put(void);
+void tile_put(void);
 void stat_isr(void);
 void bq_drain(void);
 void vq_drain(void);
@@ -85,8 +91,7 @@ ISR_VECTOR(VECTOR_STAT, stat_isr)
 
 static void vbl_isr(void)
 {
-    uint8_t vbk = 0, i, *d;
-    const uint8_t *s;
+    uint8_t vbk = 0, i;
     if (frame_ready) {
         band_scx = nx_band_scx;
         land_scx = nx_land_scx;
@@ -111,34 +116,44 @@ static void vbl_isr(void)
     }
     OBP0_REG = obp0_v;
     OBP1_REG = obp1_v;
+    /* VRAM work: only what is sure to finish inside the VBlank (see isr.s). A palette upload
+       or an animated tile that has no room waits for the next frame. */
     if (is_cgb) {
         vbk = VBK_REG & 1;
         VBK_REG = 0;
-        if (pal_flash != flash_hw) {
-            /* lightning: all BG light for a frame, then the real palettes again */
-            flash_hw = pal_flash;
-            if (pal_flash) set_bkg_palette(0, 8, white_pal);
-            else pal_req |= 1;
-        } else if (pal_flash) {
-        } else if (pal_req & 1) {
-            set_bkg_palette(0, 8, pal_bg_buf);
-            pal_req &= 2;
-        } else if (pal_req & 2) {
-            set_sprite_palette(0, 8, pal_obj_buf);
-            pal_req = 0;
+        if ((uint8_t)(LY_REG - 144) < 7) {
+            vb_reg = 0x68;
+            if (pal_flash != flash_hw) {
+                /* lightning: all BG light for a frame, then the real palettes again */
+                flash_hw = pal_flash;
+                if (pal_flash) { vb_src = (const uint8_t *)white_pal; pal_put(); }
+                else pal_req |= 1;
+            } else if (pal_flash) {
+            } else if (pal_req & 1) {
+                vb_src = (const uint8_t *)pal_bg_buf;
+                pal_put();
+                pal_req &= 2;
+            } else if (pal_req & 2) {
+                vb_src = (const uint8_t *)pal_obj_buf;
+                vb_reg = 0x6A;
+                pal_put();
+                pal_req = 0;
+            }
+        }
+    }
+    if (anim_on) {
+        i = vbl_frames & (ANIM_PERIOD - 1);
+        if (i < ANIM_COUNT && (uint8_t)(LY_REG - 144) < 8) {
+            vb_src = anim_ram[i][(vbl_frames >> 4) & (ANIM_FRAMES - 1)];
+            vb_dst = anim_dst[i];
+            tile_put();
         }
     }
     if (vq_head != vq_tail) vq_drain();
     if (bq_head != bq_tail) bq_drain();
-    if (anim_on) {
-        i = vbl_frames & (ANIM_PERIOD - 1);
-        if (i < ANIM_COUNT) {
-            s = anim_ram[i][(vbl_frames >> 4) & (ANIM_FRAMES - 1)];
-            d = anim_dst[i];
-            memcpy(d, s, 16);
-        }
-    }
     if (is_cgb) VBK_REG = vbk;
+    /* the proof that all of the above stayed inside the VBlank (the tests read it) */
+    if ((STAT_REG & 3) != 1 && (LCDC_REG & LCDCF_ON)) dbg_vram_late++;
     vbl_frames++;
     if (dbg_count_on) dbg_vbl_count++;
     prof_t = 0;
@@ -283,6 +298,51 @@ void pal_upload_now(void)
     if (pal_req & 1) set_bkg_palette(0, 8, pal_bg_buf);
     if (pal_req & 2) set_sprite_palette(0, 8, pal_obj_buf);
     pal_req = 0;
+}
+
+/* ---- main-loop VRAM writes (LCD on or off): see isr.s vram_pairs ---- */
+const uint8_t *mc_src;
+uint8_t *mc_dst;
+uint8_t mc_n;
+void vram_pairs(void);
+void vram_byte(void);
+
+void vram_put(uint8_t *dst, const uint8_t *src, uint16_t n)
+{
+    uint8_t k;
+    while (n > 1) {
+        k = n > 500 ? 250 : (uint8_t)(n >> 1);
+        mc_src = src; mc_dst = dst; mc_n = k;
+        vram_pairs();
+        src += (uint16_t)k << 1; dst += (uint16_t)k << 1; n -= (uint16_t)k << 1;
+    }
+    if (n) { mc_dst = dst; mc_n = *src; vram_byte(); }
+}
+
+void vram_tiles(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t *base, const uint8_t *src)
+{
+    uint8_t *d = base + ((uint16_t)y << 5) + x;
+    for (; h; h--, d += 32, src += w) vram_put(d, src, w);
+}
+
+/* BG tile patterns under 0x8800 addressing: 0-127 at 0x9000, 128-255 at 0x8800 */
+void bkg_data(uint8_t first, uint8_t n, const uint8_t *src)
+{
+    uint8_t k;
+    if (first < 128) {
+        k = (uint8_t)(128 - first);
+        if (k > n) k = n;
+        vram_put((uint8_t *)(0x9000u + ((uint16_t)first << 4)), src, (uint16_t)k << 4);
+        src += (uint16_t)k << 4;
+        n = (uint8_t)(n - k);
+        first = 128;
+    }
+    if (n) vram_put((uint8_t *)(0x8800u + ((uint16_t)(first - 128) << 4)), src, (uint16_t)n << 4);
+}
+
+void spr_data(uint8_t first, uint8_t n, const uint8_t *src)
+{
+    vram_put((uint8_t *)(0x8000u + ((uint16_t)first << 4)), src, (uint16_t)n << 4);
 }
 
 /* ---- setup ---- */

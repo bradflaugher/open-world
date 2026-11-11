@@ -25,7 +25,7 @@ GB_OBJS := $(patsubst src/core/%.c,$(OBJ)/core_%.o,$(CORE_SRC)) \
            $(OBJ)/assets.o \
            $(patsubst src/gb/%.s,$(OBJ)/%_s.o,$(GB_ASM))
 
-.PHONY: all rom assets test test-host test-assets test-rom test-perf test-ubsan screenshots mgba clean
+.PHONY: all rom assets test test-host test-assets test-rom test-perf test-vram test-ubsan screenshots mgba clean
 
 all: rom
 
@@ -88,6 +88,11 @@ test-rom: $(ROM) $(BUILD)/owgen
 	$(PYTHON) -m unittest discover -s tests -p 'test_core_rom.py' -v
 	$(PYTHON) -m unittest discover -s tests -p 'test_playthrough.py' -v
 	$(PYTHON) -m unittest discover -s tests -p 'test_perf.py' -v
+	$(PYTHON) -m unittest discover -s tests -p 'test_vram.py' -v
+
+# VRAM contents against the world, every frame (PyBoy; mGBA too when build/mgba_server exists)
+test-vram: $(ROM) $(BUILD)/owgen
+	$(PYTHON) -m unittest discover -s tests -p 'test_vram.py' -v
 
 # frame budget / stack headroom only (PyBoy DMG + CGB; mGBA too when build/mgba_server exists)
 test-perf: $(ROM)

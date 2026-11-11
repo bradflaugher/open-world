@@ -33,6 +33,17 @@ void vq_push(uint16_t addr, uint8_t tile, uint8_t attr);
 uint8_t vq_pending(void);
 void vram_flush(void);                    /* wait until both queues are empty */
 
+/* ---- main-loop VRAM writes: safe with the LCD on even if an interrupt arrives (isr.s).
+   GBDK's own set_tiles / set_bkg_data / set_sprite_data check STAT and then write with
+   interrupts enabled, so they are replaced throughout. Never call these from an ISR. ---- */
+void vram_put(uint8_t *dst, const uint8_t *src, uint16_t n);
+void vram_tiles(uint8_t x, uint8_t y, uint8_t w, uint8_t h, uint8_t *base, const uint8_t *src);
+void bkg_data(uint8_t first, uint8_t n, const uint8_t *src);
+void spr_data(uint8_t first, uint8_t n, const uint8_t *src);
+#define set_tiles vram_tiles
+#define set_bkg_data bkg_data
+#define set_sprite_data spr_data
+
 extern uint8_t mt_t[];                    /* RAM copies of mt_tiles / mt_attr: MT_COUNT * 4 */
 extern uint8_t mt_a[];
 extern volatile uint8_t anim_on;

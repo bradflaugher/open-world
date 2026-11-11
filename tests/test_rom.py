@@ -14,8 +14,8 @@ import unittest
 from pyboy import PyBoy
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ROM = os.path.join(ROOT, 'build', 'open-world.gb')
-SYM = os.path.join(ROOT, 'build', 'open-world.sym')
+ROM = os.environ.get('OW_ROM', os.path.join(ROOT, 'build', 'open-world.gb'))     # OW_ROM: test another build
+SYM = os.path.splitext(ROM)[0] + '.sym'
 OWGEN = os.path.join(ROOT, 'build', 'owgen')
 ASSETS_H = os.path.join(ROOT, 'src', 'gb', 'assets.h')
 WORLD_H = os.path.join(ROOT, 'src', 'core', 'world.h')
@@ -902,10 +902,11 @@ class RomTest(Base):
         g.new_world(self.SEED)
         w = g.world()
         start_n = g.u8('world_mod_count')
-        self.fill_mods(96, 'MT_FIRE_LIT')
+        # (the fire you wake at is named before the table fills: the tidy may run at once)
         keep = (1000 + start_n * 3, 1000)
         g.set_u16('respawn_x', keep[0])
         g.set_u16('respawn_y', keep[1])
+        self.fill_mods(96, 'MT_FIRE_LIT')
         self.assertTrue(g.wait(lambda: g.u8('world_mod_count') <= 96 - 25, 1200))
         self.assertEqual(self.mods().get(keep), MT['MT_FIRE_LIT'], 'the respawn fire went out')
         self.stand_next_to(w['start'])
