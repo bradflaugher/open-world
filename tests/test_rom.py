@@ -671,7 +671,7 @@ class RomTest(Base):
         g.set_u8('equipped', IT_STONES)
         g.set_u8('stones', 5)
         g.hold(['down'], 30)
-        g.press('a', after=10)
+        g.press('a', after=30)               # (both copies take a few frames to write)
         pos = g.pos()
         sram = g.sram()
         g.stop()
@@ -700,6 +700,8 @@ class RomTest(Base):
         w = g.world()
         g.set_u8('beacons_lit', 7)
         g.set_u8('heart_revealed', 1)
+        g.set_u8('stars', 5)                 # gathered in this world ...
+        g.set_u8('wisp_got_n', 5)
         self.stand_next_to(w['heart'])
         g.run(10)
         g.press('a')
@@ -708,6 +710,7 @@ class RomTest(Base):
         g.shot('ending')
         self.assertTrue(g.wait(lambda: g.state() == GS_WORLD, 3000))
         self.assertEqual(g.u8('worlds_done'), 1)
+        self.assertEqual((g.u8('stars'), g.u8('wisp_got_n')), (5, 0))   # ... the stars stay yours
         self.assertNotEqual(g.world()['seed'], self.SEED)
         self.assertEqual(g.u8('beacons_lit'), 0)
 
@@ -1081,7 +1084,7 @@ class RomTest(Base):
         g.pb.button_release('left')
         self.assertTrue(g.u8('hints') & HINT_RUN)
         g.run(20)
-        n = g.u16('dbg_save_len')
+        n = g.u16('dbg_save_len_v3')        # the hints byte: the last one of a version 3 copy
         self.assertTrue(g.sram()[n - 1] & HINT_RUN, 'retiring it was not saved')
         g.hold(['right'], 200)
         self.assertEqual(g.u8('run_hint_on'), 0, 'the run hint came back')
@@ -1103,6 +1106,57 @@ class RomTest(Base):
         self.assertEqual(g.oam(2)[2], g.spr_tile('SPR_HINT_A'))
         self.assertEqual(g.pb.memory[0xFE00 + 3 * 4], 0, 'the SELECT hint is still shown')
 
+    def older_save(self, sram, version):
+        """the save in `sram` (both copies) as an earlier version would have written it:
+        3 = up to the hints byte (no wisps), 2 = no hints byte either"""
+        n = self.g.u16('dbg_save_len_v3') - (1 if version == 2 else 0)
+        sram = bytearray(sram)
+        for base in (0, 0x1000):
+            sram[base + 2] = version
+            a, b = 0x5A, 0xA5
+            for x in sram[base:base + n]:
+                a = (a + x) & 0xFF
+                b = (b + a) & 0xFF
+            sram[base + n] = a
+            sram[base + n + 1] = b
+            for i in range(base + n + 2, base + 0x1000):
+                sram[i] = 0xFF               # nothing of the newer format is left behind it
+        return bytes(sram)
+
+    def test_version_3_save_still_loads(self):
+        # the save format of the release before wisps: it loads, with an empty sky to fill
+        g = self.g
+        g.new_world(self.SEED)
+        g.face('up')
+        g.press('a', after=30)
+        g.set_u8('items', 7)
+        g.set_u8('hints', 7)
+        g.set_u8('beacons_lit', 3)
+        g.set_u8('stars', 9)
+        g.set_u8('save_req', 1)
+        g.run(30)
+        pos = g.pos()
+        n = g.u16('dbg_save_len')
+        sram = self.older_save(g.sram(), 3)
+        g.stop()
+        self.g = g = Game(self.CGB, sram)
+        g.boot_to_title()
+        g.press('a')
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 3000))
+        self.assertEqual(g.world()['seed'], self.SEED)
+        self.assertEqual(g.pos(), pos)
+        self.assertEqual((g.u8('items'), g.u8('hints'), g.u8('beacons_lit')), (7, 7, 3))
+        self.assertEqual((g.u8('stars'), g.u8('wisp_got_n')), (0, 0))
+        self.assertEqual(self.mods().get(g.world()['start']), MT['MT_FIRE_LIT'])
+        g.wake()
+        self.check_land('continued from a v3 save')
+        g.set_u8('save_req', 1)
+        g.run(30)
+        sram = g.sram()
+        for base in (0, 0x1000):
+            self.assertEqual(sram[base + 2], 4)
+            self.assertTrue(save_copy_valid(sram, base, n))
+
     def test_version_2_save_still_loads(self):
         g = self.g
         g.new_world(self.SEED)
@@ -1111,20 +1165,13 @@ class RomTest(Base):
         g.set_u8('items', 3)
         g.set_u8('save_req', 1)
         g.run(20)
+        g.run(10)
         pos = g.pos()
         n = g.u16('dbg_save_len')
-        sram = bytearray(g.sram())
-        g.stop()
         # the same save as a version 2 copy: no hints byte at the end
-        for base in (0, 0x1000):
-            sram[base + 2] = 2
-            a, b = 0x5A, 0xA5
-            for x in sram[base:base + n - 1]:
-                a = (a + x) & 0xFF
-                b = (b + a) & 0xFF
-            sram[base + n - 1] = a
-            sram[base + n] = b
-        self.g = g = Game(self.CGB, bytes(sram))
+        sram = self.older_save(g.sram(), 2)
+        g.stop()
+        self.g = g = Game(self.CGB, sram)
         g.boot_to_title()
         g.press('a')
         self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 3000))
@@ -1134,10 +1181,10 @@ class RomTest(Base):
         g.wake()
         self.check_land('continued from a v2 save')
         g.set_u8('save_req', 1)
-        g.run(20)
+        g.run(30)
         sram = g.sram()
         for base in (0, 0x1000):
-            self.assertEqual(sram[base + 2], 3)
+            self.assertEqual(sram[base + 2], 4)
             self.assertTrue(save_copy_valid(sram, base, n))
 
     def test_waking_at_a_fire_with_no_ground_to_its_south(self):
@@ -1179,7 +1226,7 @@ class RomTest(Base):
         g.new_world(self.SEED)
         w = g.world()
         g.face('up')
-        g.press('a', after=10)                  # light the fire: a save
+        g.press('a', after=30)                  # light the fire: a save
         n = g.u16('dbg_save_len')
         sram = bytearray(g.sram())
         g.stop()
@@ -1262,6 +1309,183 @@ class RomTest(Base):
         g.pb.button_release('right')
         self.assertLessEqual(worst, 10)
         self.assertEqual(g.u8('glow_on'), 1)
+
+
+    # ---- wisps, birds, fireflies
+    PERM = None
+
+    @classmethod
+    def mix8(cls, a, b):
+        """life.c mix8: four rounds through the world core's permutation table"""
+        if cls.PERM is None:
+            src = open(os.path.join(ROOT, 'src', 'core', 'world.c')).read()
+            body = src[src.index('const uint8_t w_perm[256]'):]
+            cls.PERM = [int(v) for v in re.findall(r'\d+', body[body.index('{'):body.index('}')])]
+            assert len(cls.PERM) == 256
+        p = cls.PERM
+        h = p[(a & 0xFF) ^ 0xA7]
+        h = p[h ^ (b & 0xFF)]
+        h = p[h ^ ((a >> 8) & 0xFF)]
+        return p[h ^ ((b >> 8) & 0xFF)]
+
+    def wisp_of_chunk(self, cx, cy):
+        """life.c wisp_roll: the cell of chunk (cx, cy)'s wisp, or None. Part of what a seed
+        means: changing it moves every wisp of every saved world."""
+        h = self.mix8(cx ^ self.SEED, (cy + 0x3C6E) & 0xFFFF)
+        if h & 3 != 3:
+            return None
+        k = self.mix8(cy ^ (self.SEED >> 3), (cx + 0x1F2D) & 0xFFFF)
+        return ((cx << 4) + 2 + (k & 7) + ((h >> 3) & 3)) & 0xFFFF, ((cy << 4) + 2 + ((k >> 3) & 7) + ((k >> 6) & 3)) & 0xFFFF
+
+    def nearest_wisp(self, px, py, taken=()):
+        """what wisp_task finds from (px, py): of the wisps of the 7x7 chunks around that are not
+        taken, the four nearest (ties: scan order), and of those the nearest over open ground
+        (the cell is open, and so is one of the four beside it)"""
+        cand = []
+        for cy in range((py >> 4) - 3, (py >> 4) + 4):
+            for cx in range((px >> 4) - 3, (px >> 4) + 4):
+                w = self.wisp_of_chunk(cx & 0xFFF, cy & 0xFFF)
+                if w and (cx, cy) not in taken:
+                    cand.append((max(abs(w[0] - px), abs(w[1] - py)), len(cand), w))
+        for _, _, w in sorted(cand)[:4]:
+            reg = host_region(self.SEED, w[0] - 1, w[1] - 1, 3, 3)
+            if self.walkable(reg[w]) and any(self.walkable(reg[(w[0] + dx, w[1] + dy)])
+                                             for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))):
+                return w
+        return None
+
+    def star_tiles_in_the_sky(self):
+        g = self.g
+        with open(ASSETS_H) as f:
+            star0 = int(re.search(r'#define BAND_STAR0\s+(\d+)', f.read()).group(1))
+        return sum(1 for r in range(2) for c in range(32) if g.vram(0x9C00 + r * 32 + c) in (star0, star0 + 1))
+
+    def test_a_wisp_is_gathered_and_becomes_a_star(self):
+        g = self.g
+        g.new_world(self.SEED)
+        self.assertTrue(g.wait(lambda: g.u8('wisp_on'), 600), 'no wisp found near the start')
+        px, py = g.pos()[:2]
+        wisp = (g.u16('wisp_x'), g.u16('wisp_y'))
+        self.assertEqual(wisp, self.nearest_wisp(px, py), 'not where the seed puts it')
+        # its glint on the horizon band: turn until it is in view
+        seen = False
+        for d in ('up', 'right', 'down', 'left'):
+            g.face(d)
+            for _ in range(140):
+                g.run(1)
+                x = g.u8('band_mark_x', 5)
+                if 4 <= x <= 156:
+                    o = g.oam(38)
+                    self.assertEqual((o[0], o[1], o[2]), (32, x + 4, g.spr_tile('SPR_BAND_WISP')))
+                    seen = True
+                    break
+            if seen:
+                break
+        self.assertTrue(seen, 'the wisp never showed on the band')
+        # walk into it
+        saves = g.u8('dbg_saves')
+        d = next(d for d, (dx, dy) in DIRV.items() if self.walkable(self.mt_now(wisp[0] - dx, wisp[1] - dy)))
+        g.teleport((wisp[0] - DIRV[d][0]) & 0xFFFF, (wisp[1] - DIRV[d][1]) & 0xFFFF)
+        g.run(4)
+        self.assertEqual((g.u8('wisp_on'), g.u16('wisp_x'), g.u16('wisp_y')), (1,) + wisp)
+        o = g.oam(39)
+        self.assertIn(o[2], (g.spr_tile('SPR_WISP0'), g.spr_tile('SPR_WISP1')), 'the wisp is not drawn')
+        g.pb.button_press(d)
+        self.assertTrue(g.wait(lambda: g.u8('stars') == 1, 40), 'walking into the wisp did not gather it')
+        g.pb.button_release(d)
+        self.assertEqual((g.u16('wisp_got_x'), g.u16('wisp_got_y'), g.u8('wisp_got_n')), (wisp[0] >> 4, wisp[1] >> 4, 1))
+        self.assertTrue(g.wait(lambda: g.u8('wisp_rise') == 0 and g.u8('wisp_on') == 0, 120), 'it never rose away')
+        self.assertTrue(g.wait(lambda: g.u8('dbg_saves') > saves, 120), 'gathering it was not saved')
+        # the next nearest one is another one
+        self.assertTrue(g.wait(lambda: g.u8('wisp_on'), 900))
+        nxt = (g.u16('wisp_x'), g.u16('wisp_y'))
+        self.assertNotEqual(nxt, wisp)
+        self.assertEqual(self.wisp_of_chunk(nxt[0] >> 4, nxt[1] >> 4), nxt)
+        # at night the sky holds one star more than it began with
+        g.set_time(T_NIGHT + 600)
+        self.assertTrue(g.wait(lambda: self.star_tiles_in_the_sky() == 4, 300),
+                        f'{self.star_tiles_in_the_sky()} stars in the night sky, not the 3 it began with + 1')
+        self.assertEqual(g.u8('band_stars_n'), 4)
+        g.set_u8('save_req', 1)
+        g.run(40)
+        sram = g.sram()
+        g.stop()
+        # it is still gathered after a power cycle, and the star is still yours
+        self.g = g = Game(self.CGB, sram)
+        g.boot_to_title()
+        g.press('a')
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 3000))
+        self.assertEqual((g.u8('stars'), g.u8('wisp_got_n')), (1, 1))
+        g.wake()
+        self.assertTrue(g.wait(lambda: g.u8('wisp_on'), 900))
+        self.assertNotEqual((g.u16('wisp_x'), g.u16('wisp_y')), wisp)
+        self.check_land('after the wisp')
+
+    def test_a_bird_takes_off_and_fireflies_come_out_at_night(self):
+        g = self.g
+        g.new_world(self.SEED)
+        g.set_time(T_DAY + 200)
+        g.set_u8('weather', WX_CLEAR)
+        sit, fly = g.spr_tile('SPR_BIRD_SIT'), (g.spr_tile('SPR_BIRD0'), g.spr_tile('SPR_BIRD1'))
+        worst = 0
+
+        def bird():
+            for i in (27, 28):
+                o = g.oam(i)
+                if o[0] and o[2] == sit:
+                    return o
+            return None
+        # stroll about until a bird stands somewhere in view
+        found = None
+        for k in range(40):
+            g.hold([('right', 'down', 'left', 'up')[k & 3]], 50)
+            worst = max(worst, max(g.oam_line_counts()))
+            found = bird()
+            if found:
+                break
+        self.assertIsNotNone(found, 'no bird ever landed')
+        self.assertGreaterEqual(g.u8('dbg_birds'), 1)
+        # walk at it: it flies off before you reach it
+        for _ in range(400):
+            o = bird()
+            if not o or g.u8('dbg_flushed'):
+                break
+            bx, by = o[1] - 4, o[0] - 16 + 14            # its feet on screen (the wanderer: 80, 92)
+            keys = []
+            if bx < 76:
+                keys.append('left')
+            elif bx > 84:
+                keys.append('right')
+            if by < 88:
+                keys.append('up')
+            elif by > 96:
+                keys.append('down')
+            g.hold(keys or ['right'], 2)
+        self.assertGreaterEqual(g.u8('dbg_flushed'), 1, 'the bird never took off')
+        self.assertTrue(g.wait(lambda: any(g.oam(i)[0] and g.oam(i)[2] in fly for i in (27, 28)), 10), 'no flying bird')
+        self.assertTrue(g.wait(lambda: not any(g.oam(i)[0] and g.oam(i)[2] in fly for i in (27, 28)), 200),
+                        'the bird never left')
+        # rain: the weather has its sprites back
+        g.set_u8('weather', WX_RAIN)
+        g.run(30)
+        rain = g.spr_tile('SPR_RAIN')
+        self.assertTrue(all(g.oam(i)[2] == rain for i in (27, 28)))
+        # a clear night over the grass: fireflies
+        g.set_u8('weather', WX_CLEAR)
+        g.set_time(T_NIGHT + 600)
+        ff = g.spr_tile('SPR_FIREFLY')
+        seen = False
+        for k in range(60):
+            g.hold([('left', 'up', 'right', 'down')[k & 3]], 40)
+            g.set_u8('weather', WX_CLEAR)
+            for _ in range(8):
+                g.run(1)
+                worst = max(worst, max(g.oam_line_counts()))
+                seen = seen or any(g.oam(i)[0] and g.oam(i)[2] == ff for i in (27, 28))
+            if seen and g.u8('dbg_fireflies'):
+                break
+        self.assertTrue(seen, 'no firefly at night')
+        self.assertLessEqual(worst, 10, 'more than 10 sprites on a line')
 
 
 class RomTestCGB(RomTest):

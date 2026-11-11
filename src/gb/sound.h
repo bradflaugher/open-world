@@ -39,6 +39,8 @@ enum {
     SFX_MAP,         /* map opened / closed (paper) */
     SFX_THUNDER,     /* lightning */
     SFX_SIT,         /* sitting down (soft) */
+    SFX_WISP,        /* a light gathered (two soft rising notes) */
+    SFX_FLUTTER,     /* a small bird takes off */
     NUM_SFX
 };
 

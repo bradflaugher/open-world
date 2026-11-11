@@ -10,17 +10,17 @@
 #include "assets.h"
 #include "sound.h"
 
-#define NSTARS 12
+#define NSTARS 28              /* the full sky: STARS_BASE to begin with, one more per wisp */
 static uint8_t band_row[3][32];
 static uint8_t star_col[NSTARS], star_row[NSTARS], star_tile[NSTARS];
 static uint8_t nstars;
 static uint16_t band_ang;           /* 8.8 bearing at the centre of the screen */
-static uint8_t mark_b[5];           /* cached bearings */
+static uint8_t mark_b[6];           /* cached bearings: beacons, heart, cairn, wisp */
 static uint8_t mark_rr;
 static uint8_t cairn_near = 0xFF;
-uint8_t band_mark_x[5];
+uint8_t band_mark_x[6];
 static uint8_t mark_last_a, mark_last_state = 0xFF;
-static uint8_t mark_tile[5], mark_pal[5];   /* tile 0 = hidden */
+static uint8_t mark_tile[6], mark_pal[6];   /* tile 0 = hidden */
 
 static uint16_t brng;
 static uint8_t brnd(void)
@@ -82,7 +82,7 @@ void band_build(void) BANKED
     }
     /* stars: in open sky only */
     nstars = 0;
-    for (i = 0; i < 40 && nstars < NSTARS; i++) {
+    for (i = 0; i < 120 && nstars < NSTARS; i++) {
         c = (uint8_t)(brnd() & 31);
         r = (uint8_t)((brnd() & 3) ? 0 : 1);
         if (band_row[r][c] != BAND_SKY && band_row[r][c] != BAND_SKY_TOP) continue;
@@ -102,16 +102,22 @@ void band_build(void) BANKED
     }
     cairn_near = 0xFF;
     memset(mark_b, 0, sizeof mark_b);
-    for (i = 0; i < 5; i++) band_mark_x[i] = 0xFF;
+    for (i = 0; i < 6; i++) band_mark_x[i] = 0xFF;
 }
 
+uint8_t band_stars_n;               /* stars in the sky now (tests) */
 uint8_t band_stars(uint8_t on) BANKED
 {
-    uint8_t i, t;
+    uint8_t i, t, n;
     /* never block a game frame on a full queue: the next phase update will redo it */
     if (vq_pending() > 31 - 1 - NSTARS) return 0;
+    /* the sky holds the stars you gathered (and a few of its own) */
+    n = (uint8_t)(stars > NSTARS ? NSTARS : stars);
+    n = (uint8_t)(n + STARS_BASE);
+    if (n > nstars) n = nstars;
+    band_stars_n = n;
     for (i = 0; i < nstars; i++) {
-        t = on ? star_tile[i] : band_row[star_row[i]][star_col[i]];
+        t = (on && i < n) ? star_tile[i] : band_row[star_row[i]][star_col[i]];
         vq_push((uint16_t)(0x9C00u + ((uint16_t)star_row[i] << 5) + star_col[i]), t, PAL_SKY);
     }
     return 1;
@@ -164,12 +170,21 @@ void band_bearing_task(void) BANKED
     case 4:
         nearest_cairn(mx, my);
         c = cairn_near;
-        if (c == 0xFF) { mark_new = 1; mark_rr = 0; return; }
+        if (c == 0xFF) { mark_new = 1; mark_rr = 5; return; }
         b = world_bearing(mx, my, cairns[c].x, cairns[c].y);
+        break;
+    default:
+        {
+            uint16_t wx, wy;
+            uint8_t on;
+            __critical { on = wisp_on; wx = wisp_x; wy = wisp_y; }
+            if (!on) { mark_rr = 0; return; }
+            b = world_bearing(mx, my, wx, wy);
+        }
         break;
     }
     if (b != mark_b[mark_rr]) { mark_b[mark_rr] = b; mark_new = 1; }
-    if (++mark_rr >= 5) mark_rr = 0;
+    if (++mark_rr >= 6) mark_rr = 0;
 }
 
 void band_update(void) BANKED
@@ -190,11 +205,13 @@ void band_update(void) BANKED
 
     /* markers move only when the band turns or a bearing / state changes */
     i = (uint8_t)(beacons_lit | (heart_revealed << 3) | ((cairn_near != 0xFF) << 4));
+    /* the nearest wisp glints on the far ridge (not while it rises: it is in your hands) */
+    if (wisp_on && !wisp_rise) i |= (uint8_t)(0x20 | ((vbl_frames & 0x20) << 1));
     if (a == mark_last_a && i == mark_last_state && !mark_new) return;
     if (FRAME_LATE()) return;
     if (i != mark_last_state) {         /* tiles / palettes only when a state changes */
         uint8_t k;
-        for (k = 0; k < 5; k++) {
+        for (k = 0; k < 6; k++) {
             uint8_t show = 1, tile, pal;
             if (k < 3) {
                 if (beacons_lit & (1 << k)) { tile = SPR_BAND_BEACON_LIT; pal = OPAL_LIGHT | S_PALETTE; }
@@ -202,9 +219,12 @@ void band_update(void) BANKED
             } else if (k == 3) {
                 tile = SPR_BAND_HEART; pal = OPAL_LIGHT | S_PALETTE;
                 show = heart_revealed;
-            } else {
+            } else if (k == 4) {
                 tile = SPR_BAND_CAIRN; pal = OPAL_BAND;
                 show = (uint8_t)(cairn_near != 0xFF);
+            } else {
+                tile = SPR_BAND_WISP; pal = OPAL_LIGHT | S_PALETTE;
+                show = (uint8_t)((i & 0x60) == 0x60);       /* it twinkles */
             }
             if (!is_cgb) pal &= S_PALETTE;
             mark_tile[k] = show ? tile : 0;
@@ -225,6 +245,17 @@ void band_update(void) BANKED
             }
             band_mark_x[i] = x;
             o[0] = 16 + 8; o[1] = (uint8_t)(x + 8 - 4); o[2] = mark_tile[i]; o[3] = mark_pal[i];
+        }
+        /* the wisp's glint: its own slot, on the band's last rows (lines 17-23), so the lines
+           the warmth pips share with the five markers above never hold an eleventh sprite */
+        o = &oam[SP_TWINK << 2];
+        x = (uint8_t)(mark_b[5] - a + 80);
+        if (!mark_tile[5] || x < 4 || x > 156) {
+            o[0] = 0;
+            band_mark_x[5] = (uint8_t)(mark_tile[5] ? 0xFF : 0xFE);
+        } else {
+            band_mark_x[5] = x;
+            o[0] = 16 + 16; o[1] = (uint8_t)(x + 8 - 4); o[2] = mark_tile[5]; o[3] = mark_pal[5];
         }
     }
 

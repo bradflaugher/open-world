@@ -67,7 +67,7 @@ extern const uint8_t anim_frames[ANIM_COUNT][ANIM_FRAMES][16];
 #define BAND_SLOPE_DN0   157  /* +k: falls left->right to height k+1 at the right edge */
 
 /* ---- sprites: 8x16 OBJ tiles (LCDC.2 = 1), load at 0x8000 ---- */
-#define SPR_TILE_COUNT 92    /* <= 128 */
+#define SPR_TILE_COUNT 102    /* <= 128 */
 extern const uint8_t spr_tiles[];
 /* Player frames are 16x16 = two 8x16 sprites: constant = LEFT half, right half = +2.
    Side frames face RIGHT (X-flip and swap halves for left). */
@@ -114,6 +114,11 @@ extern const uint8_t spr_tiles[];
 #define SPR_MAP_HEART        82
 #define SPR_HINT_B           84
 #define SPR_HINT_SEL         86
+#define SPR_WISP0            92
+#define SPR_WISP1            94
+#define SPR_BAND_WISP        96
+#define SPR_BIRD_SIT         98
+#define SPR_FIREFLY          100
 
 /* ---- palettes ---- */
 /* DMG, indexed by PH_DAWN, PH_DAY, PH_DUSK, PH_NIGHT (sound.h). Colour index -> shade

@@ -16,6 +16,7 @@ uint16_t pl_mx, pl_my;
 uint8_t pl_sx, pl_sy;
 uint16_t cam_mx, cam_my;
 uint8_t cam_sx, cam_sy;
+uint16_t cam_px, cam_py, pl_px, pl_py;
 int8_t pl_lift;
 uint16_t tod, day_count;
 uint8_t phase = 0xFF, weather, biome_here;
@@ -250,6 +251,10 @@ void camera_update(void) BANKED
     cam_my = (uint16_t)(pl_my - 4);
     if (sy < 0) { sy += 16; cam_my--; }
     cam_sy = (uint8_t)sy;
+    cam_px = (uint16_t)((cam_mx << 4) | cam_sx);
+    cam_py = (uint16_t)((cam_my << 4) | cam_sy);
+    pl_px = (uint16_t)((pl_mx << 4) | pl_sx);
+    pl_py = (uint16_t)((pl_my << 4) | pl_sy);
     if (shake) {
         uint8_t r = rnd8();
         shake_x = (int8_t)((r & 1) ? (shake >> 1) + 1 : -(int8_t)((shake >> 1) + 1));
@@ -293,6 +298,7 @@ static void phase_update(uint8_t instant)
         if (p == PH_DAWN && !instant) { __critical { sfx_play(SFX_DAWN); } }
     }
     t = (uint8_t)(p == PH_NIGHT || p == PH_DUSK);
+    if (stars_new) { stars_new = 0; stars_shown = 0xFF; }      /* one more star in the sky */
     if (t != stars_shown && band_stars(t)) stars_shown = t;
     t = into >= PHASE_BLEND ? 16 : (uint8_t)(into >> 6);
     if (instant) t = 16;
@@ -449,13 +455,14 @@ static void bg_task(void)
     case 0: phase_update(0); break;
     case 1: case 5: band_bearing_task(); break;
     case 2: case 6: scan_warm_maybe(); break;
-    case 3: if (f & 8) visit_mark(); break;
+    case 3: if (f & 8) visit_mark(); else wisp_task(); break;
     case 4: warm6 = warm_within(6); break;
     case 7:
         switch ((f >> 3) & 3) {
         case 0: biome_update(); break;
         case 1: weather_update(); break;
         case 2: ambient_update(); break;
+        default: wisp_task(); break;
         }
         break;
     }
@@ -500,6 +507,7 @@ static void new_world(uint16_t seed)
     tod = 600;          /* early dawn */
     day_count = 0;
     cairn_n = 0;
+    wisps_clear();
     memset(visited, 0, sizeof visited);
     respawn_x = world.start.x;
     respawn_y = world.start.y;
@@ -553,6 +561,8 @@ void world_enter(uint8_t fresh) BANKED
     band_reset_angle();
     fx_redraw();
     watchers_reset();
+    life_reset();
+    wisps_rescan();
     hint_on = 0;              /* the hints are worked out again by the first game frame */
     run_hint_on = 0;
     scan_warm();
@@ -712,6 +722,7 @@ void world_frame(void) BANKED
     PSTAGE(PF_DRAW);
     dbg_stage = 5;
     fx_update();
+    life_update();
     PSTAGE(PF_FX);
     dbg_stage = 6;
     frame_commit();
@@ -809,6 +820,8 @@ static void world_run(void)
             land_refill(cam_mx, cam_my);
             band_reset_angle();
             scan_warm();
+            life_reset();
+            wisps_rescan();
             dbg_teleport = 0;
             break;
         case REQ_REFILL:

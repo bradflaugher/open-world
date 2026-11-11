@@ -161,6 +161,15 @@ static const uint8_t sfx_sit[] = {
     0x20, 0x00, 0x21, 0x22, 0x22, 0x72, 0x23, 0x80, 0x43, 0x20, 0x00, 0x21, 0x12, 0x22, 0x53, 0x23,
     0x80, 0x47, 0x00,
 };
+static const uint8_t sfx_wisp[] = {
+    0x16, 0x80, 0x17, 0x42, 0x18, 0x6B, 0x19, 0x87, 0x46, 0x16, 0x80, 0x17, 0x53, 0x18, 0x9D, 0x19,
+    0x87, 0x5D, 0x00,
+};
+static const uint8_t sfx_flutter[] = {
+    0x20, 0x00, 0x21, 0x21, 0x22, 0x23, 0x23, 0x80, 0x42, 0x20, 0x00, 0x21, 0x11, 0x22, 0x13, 0x23,
+    0x80, 0x42, 0x20, 0x00, 0x21, 0x21, 0x22, 0x22, 0x23, 0x80, 0x42, 0x20, 0x00, 0x21, 0x11, 0x22,
+    0x13, 0x23, 0x80, 0x44, 0x00,
+};
 #define SND_STEP_VARIANTS 3
 static const uint8_t * const snd_step_var[4][SND_STEP_VARIANTS] = {
     { sfx_step_soft_0, sfx_step_soft_1, sfx_step_soft_2 },
@@ -168,7 +177,7 @@ static const uint8_t * const snd_step_var[4][SND_STEP_VARIANTS] = {
     { sfx_step_snow_0, sfx_step_snow_1, sfx_step_snow_2 },
     { sfx_step_stone_0, sfx_step_stone_1, sfx_step_stone_2 },
 };
-static const uint8_t * const snd_sfx_data[21] = {
+static const uint8_t * const snd_sfx_data[23] = {
     sfx_step_soft_0, /* SFX_STEP_SOFT */
     sfx_step_sand_0, /* SFX_STEP_SAND */
     sfx_step_snow_0, /* SFX_STEP_SNOW */
@@ -190,9 +199,11 @@ static const uint8_t * const snd_sfx_data[21] = {
     sfx_map, /* SFX_MAP */
     sfx_thunder, /* SFX_THUNDER */
     sfx_sit, /* SFX_SIT */
+    sfx_wisp, /* SFX_WISP */
+    sfx_flutter, /* SFX_FLUTTER */
 };
-static const uint8_t snd_sfx_mask[21] = { 8, 8, 8, 8, 10, 8, 10, 10, 10, 8, 8, 2, 3, 11, 3, 10, 2, 2, 8, 8, 8 };
-static const uint8_t snd_sfx_prio[21] = { 0, 0, 0, 0, 2, 2, 2, 2, 1, 2, 1, 1, 3, 3, 3, 3, 2, 1, 1, 2, 1 };
+static const uint8_t snd_sfx_mask[23] = { 8, 8, 8, 8, 10, 8, 10, 10, 10, 8, 8, 2, 3, 11, 3, 10, 2, 2, 8, 8, 8, 2, 8 };
+static const uint8_t snd_sfx_prio[23] = { 0, 0, 0, 0, 2, 2, 2, 2, 1, 2, 1, 1, 3, 3, 3, 3, 2, 1, 1, 2, 1, 2, 0 };
 
 static const uint8_t mo_title[] = {
     0xF3, 0x80, 0x00, 0xF4, 0x02, 0x00, 0xF0, 0x1A, 0x28, 0x21, 0x77, 0x18, 0x26, 0x77, 0x18,
@@ -222,6 +233,6 @@ static const uint8_t mo_ending[] = {
     0xFF, 0x00, 0x00,
 };
 
-#define SND_DATA_BYTES 1548
+#define SND_DATA_BYTES 1604
 
 #endif

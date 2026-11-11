@@ -266,6 +266,19 @@ def sfx_sit():
     return S().nz(0x22, 0x72).wait(4).nz(0x12, 0x53).wait(8).end()
 
 
+def sfx_wisp():
+    # a light gathered: two soft rising notes that ring a little (in key, like a far bell)
+    return S().p2("A5", 0x42, 50).wait(7).p2("E6", 0x53, 50).wait(30).end()
+
+
+def sfx_flutter():
+    # a small bird takes off: three quick soft wingbeats
+    s = S()
+    for env, poly, wt in [(0x21, 0x23, 3), (0x11, 0x13, 3), (0x21, 0x22, 3), (0x11, 0x13, 5)]:
+        s.nz(env, poly).wait(wt)
+    return s.end()
+
+
 # order = sound.h enum; (name, script, mask, priority)
 SFX = [
     ("STEP_SOFT", None, CH4, 0),
@@ -289,6 +302,8 @@ SFX = [
     ("MAP", sfx_map(), CH4, 1),
     ("THUNDER", sfx_thunder(), CH4, 2),
     ("SIT", sfx_sit(), CH4, 1),
+    ("WISP", sfx_wisp(), CH2, 2),
+    ("FLUTTER", sfx_flutter(), CH4, 0),
 ]
 
 # ---------------------------------------------------------------- motifs
