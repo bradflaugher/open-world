@@ -28,6 +28,7 @@ uint8_t prof_t;
 uint8_t dbg_vbl_ly[2];
 
 volatile uint8_t split_mode;
+volatile uint8_t pad_watch, pad_now, pad_hits;
 uint8_t nx_band_scx, nx_land_scx, nx_land_scy, nx_band_bgp = 0xE4, nx_land_bgp = 0xE4;
 uint8_t nx_obp0 = 0xD0, nx_obp1 = 0xE0, nx_scx, nx_scy;
 volatile uint8_t band_scx, land_scx, land_scy, band_bgp = 0xE4, land_bgp = 0xE4;
@@ -50,7 +51,6 @@ uint8_t mt_a[MT_COUNT * 4];
 volatile uint8_t anim_on;
 volatile uint8_t hook_on, hook_busy;
 static volatile uint8_t sound_busy;
-static uint8_t anim_ram[ANIM_COUNT][ANIM_FRAMES][16];
 static uint8_t *anim_dst[ANIM_COUNT];
 
 /* palettes */
@@ -81,7 +81,7 @@ static const uint16_t white_pal[32] = {
 const uint8_t *vb_src;
 uint8_t *vb_dst;
 uint8_t vb_reg;
-uint16_t dbg_vram_late;      /* VBlanks whose VRAM work ran past the VBlank (must stay 0) */
+uint16_t dbg_vram_late;      /* VRAM routines whose last write was not in VBlank (isr.s; must stay 0) */
 void pal_put(void);
 void tile_put(void);
 void stat_isr(void);
@@ -144,17 +144,27 @@ static void vbl_isr(void)
     if (anim_on) {
         i = vbl_frames & (ANIM_PERIOD - 1);
         if (i < ANIM_COUNT && (uint8_t)(LY_REG - 144) < 8) {
-            vb_src = anim_ram[i][(vbl_frames >> 4) & (ANIM_FRAMES - 1)];
+            /* straight from the (banked) art: the handler maps the bank in, like the sound */
+            ASSETS_IN();
+            vb_src = anim_frames[i][(vbl_frames >> 4) & (ANIM_FRAMES - 1)];
             vb_dst = anim_dst[i];
             tile_put();
+            ASSETS_OUT();
         }
     }
-    if (vq_head != vq_tail) vq_drain();
+    /* the land first (it is about to scroll into view); single tiles (the band's stars) take
+       what is left of the VBlank */
     if (bq_head != bq_tail) bq_drain();
+    if (vq_head != vq_tail) vq_drain();
     if (is_cgb) VBK_REG = vbk;
-    /* the proof that all of the above stayed inside the VBlank (the tests read it) */
-    if ((STAT_REG & 3) != 1 && (LCDC_REG & LCDCF_ON)) dbg_vram_late++;
     vbl_frames++;
+    /* screens whose main loop can be busy for several frames (the map's survey) have the pad
+       read here, every frame, so a short tap is never lost */
+    if (pad_watch) {
+        i = joypad();
+        pad_hits |= (uint8_t)(i & ~pad_now);
+        pad_now = i;
+    }
     if (dbg_count_on) dbg_vbl_count++;
     prof_t = 0;
     PSTAGE(PF_DRAIN);                /* from the start of the VBlank: absolute */
@@ -229,14 +239,16 @@ void split_enable(uint8_t on)
 }
 
 /* ---- VRAM queues ---- */
-void bq_push(uint8_t col, uint8_t row, uint8_t mt, const uint8_t *t)
+static void bq_put(uint8_t front, uint8_t col, uint8_t row, uint8_t mt, const uint8_t *t)
 {
-    uint8_t h, *p;
+    uint8_t h, k, *p;
     uint16_t a = 0x9800u + ((uint16_t)row << 6) + ((uint16_t)col << 1);
     for (;;) {
         __critical {
             h = bq_head;
-            if ((uint8_t)((h + 1) & 31) != bq_tail) {
+            k = bq_tail;
+            if ((uint8_t)((h + 1) & 31) != k) {
+                if (front) h = k = (uint8_t)((k - 1) & 31);
                 p = &bq[(uint16_t)h << 3];
                 p[0] = (uint8_t)a;
                 p[1] = (uint8_t)(a >> 8);
@@ -245,7 +257,8 @@ void bq_push(uint8_t col, uint8_t row, uint8_t mt, const uint8_t *t)
                 p[4] = t[1];
                 p[5] = t[2];
                 p[6] = t[3];
-                bq_head = (uint8_t)((h + 1) & 31);
+                if (front) bq_tail = k;
+                else bq_head = (uint8_t)((h + 1) & 31);
                 h = 0xFF;
             }
         }
@@ -253,6 +266,18 @@ void bq_push(uint8_t col, uint8_t row, uint8_t mt, const uint8_t *t)
         __asm__("halt");
         __asm__("nop");
     }
+}
+
+void bq_push(uint8_t col, uint8_t row, uint8_t mt, const uint8_t *t)
+{
+    bq_put(0, col, row, mt, t);
+}
+
+/* ahead of everything already queued: for cells that are nearly in view (water-edge fix-ups
+   of the line behind a new column / row), so they never wait behind a whole column */
+void bq_push_front(uint8_t col, uint8_t row, uint8_t mt, const uint8_t *t)
+{
+    bq_put(1, col, row, mt, t);
 }
 
 uint8_t bq_pending(void)
@@ -395,7 +420,6 @@ void gfx_init(void)
         memcpy(mt_t, mt_tiles, sizeof mt_t);
         memcpy(mt_a, mt_attr, sizeof mt_a);
         memcpy(edge_t, edge_tiles, EDGE_CLASS_COUNT * 4 * EDGE_VARIANT_COUNT);
-        memcpy(anim_ram, anim_frames, sizeof anim_ram);
         memcpy(dmg_bg_r, dmg_bgp, 4);
         memcpy(dmg_o0_r, dmg_obp0, 4);
         memcpy(dmg_o1_r, dmg_obp1, 4);

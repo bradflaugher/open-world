@@ -56,6 +56,7 @@ class LandWatch:
         self.bad = []           # (tag, frame, cell, quarter, got, expected)
         self.streak = {}        # (cell, quarter) -> consecutive wrong frames
         self.worst = 0
+        self.edited = {}        # cells whose cache just changed -> the frame until which to skip them
 
     def host(self, x, y):
         k = (x >> 5, y >> 5)
@@ -81,8 +82,6 @@ class LandWatch:
         scx, scy = g.u8('land_scx'), (g.u8('land_scy') + 24) & 255
         x0, y0 = g.u16('land_x0'), g.u16('land_y0')
         md = self.mods()
-        # a burning bramble is shown as a fire for a moment before its mod exists
-        burning = {k for k in ()}
         grid = {}
 
         def cell(x, y):
@@ -103,14 +102,15 @@ class LandWatch:
                 y = (y0 + (((tr >> 1) - y0) & 15)) & 0xFFFF
                 q = (tr & 1) * 2 + (tc & 1)
                 key = (x, y, q)
-                if key in burning:
-                    continue
                 m = cell(x, y)
-                # the ROM's cache is the truth for transient edits (a bramble burning)
+                # an edit (a fire lit, a shrine emptied, thorns burning) changes the ROM's land
+                # cache at once; its tiles follow at the next VBlank and its mod when the main
+                # loop gets to it. For those few frames the cache is the truth for that cell.
                 cm = g.pb.memory[cache_a + ((y & 15) << 4 | (x & 15))]
                 if cm != m:
-                    if cm == MT['MT_FIRE_LIT'] and m == MT['MT_BRAMBLE']:
-                        continue
+                    self.edited[(x, y)] = self.frames + 4
+                if self.edited.get((x, y), 0) >= self.frames:
+                    continue
                 for dx in (-1, 0, 1):
                     for dy in (-1, 0, 1):
                         cell(x + dx, y + dy)
@@ -155,6 +155,7 @@ class VramBase:
 
     def hold(self, w, keys, n):
         g = self.g
+        self.settle()
         for b in keys:
             g.pb.button_press(b)
         for _ in range(n):
@@ -163,8 +164,16 @@ class VramBase:
         for b in keys:
             g.pb.button_release(b)
 
+    def settle(self):
+        """a Watcher may have touched the wanderer on the way (a whiteout): wake up again"""
+        g = self.g
+        self.assertTrue(g.wait(lambda: g.state() == T.GS_WORLD and g.u8('pal_fade') == 0, 2000))
+        g.wake()
+        g.set_u16('warmth', 1023)
+
     def map_toggle(self, w):
         g = self.g
+        self.settle()
         g.press('start', after=10)
         self.assertTrue(g.wait(lambda: g.state() == T.GS_MAP, 300))
         g.run(40)

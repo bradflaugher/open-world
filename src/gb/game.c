@@ -104,7 +104,7 @@ static uint8_t rnd8(void)
 #define EQ_N 8
 static uint16_t eq_x[EQ_N], eq_y[EQ_N];
 static uint8_t eq_mt[EQ_N];
-static volatile uint8_t eq_head, eq_tail;
+volatile uint8_t eq_head, eq_tail;      /* (not static: the tests look) */
 volatile uint8_t save_req;
 #define EQ_REMOVE 0xFF
 
@@ -681,8 +681,8 @@ void world_frame(void) BANKED
        the view must stay off the outer half of the window's edge columns / rows, which are
        provisional (their far neighbours are not loaded, so their water edges are not final),
        with 2 px for this frame's move and some for the VBlank queue. */
-    rx = (int16_t)(((int16_t)(cam_mx - land_x0) << 4) + cam_sx);
-    ry = (int16_t)(((int16_t)(cam_my - land_y0) << 4) + cam_sy);
+    rx = (int16_t)(((int16_t)(cam_mx - land_gx0) << 4) + cam_sx);
+    ry = (int16_t)(((int16_t)(cam_my - land_gy0) << 4) + cam_sy);
     if (rx < 0 || rx > 88 || ry < 0 || ry > 128) {
         carry_pressed = (uint8_t)(pressed & (J_A | J_SELECT));
         request(REQ_REFILL);
@@ -779,7 +779,8 @@ static void world_run(void)
                 uint8_t f = pl_face & 7;
                 if (!land_prefetch(fdx[f], fdy[f])) { __asm__("halt"); __asm__("nop"); }
             }
-            else if (r == 1) request(REQ_REFILL);
+            /* (the game frame may have asked for the map or a whiteout meanwhile: that stands) */
+            else if (r == 1) { __critical { if (!world_req) request(REQ_REFILL); } }
         }
         while (hook_busy) { __asm__("halt"); __asm__("nop"); }
         dbg_count_on = 0;

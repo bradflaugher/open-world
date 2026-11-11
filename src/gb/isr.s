@@ -51,6 +51,24 @@ _stat_isr::
 ; lands before line 153 ends. (LY reads 0 for most of line 153: that stops the loop too.)
 rLY   = 0x44
 VB_LAST = 9                 ; entries start while LY - 144 < VB_LAST
+; The longest entry (a land cell on a DMG) is 76 M-cycles of a 114-cycle line, so a write never
+; lands later than two thirds of the way through line 153. Each routine proves it: right after
+; its last write it reads STAT, and counts in dbg_vram_late if that is not mode 1 (VBlank).
+    .globl _dbg_vram_late
+vb_proof:
+    ldh a,(rSTAT)
+    and a,#3
+    dec a
+    ret z
+    ldh a,(rLCDC)
+    rlca
+    ret nc                  ; LCD off: no modes
+    ld hl,#_dbg_vram_late
+    ld a,(hl)
+    inc a
+    ret z
+    ld (hl),a
+    ret
 
 ; ---- land metatile queue: entry = addr lo, addr hi, mt, t0..t3, pad (32 x 8 bytes) ----
 ; All four tiles of a metatile slot share one 256-byte page (TL low byte <= 222), so only E moves.
@@ -145,7 +163,10 @@ _bq_drain::
 .bq_done:
     ld a,c
     ld (_bq_tail),a
-    ret
+    ld a,(_bq_budget)
+    cp a,b
+    ret z                   ; nothing written this time: nothing to prove
+    jp vb_proof
 
 ; ---- single tile queue: entry = addr lo, addr hi, tile, attr (32 entries), up to 8 per call ----
 _vq_drain::
@@ -155,11 +176,11 @@ _vq_drain::
     ld c,a
     ld a,(_vq_head)
     cp a,c
-    ret z
+    jr z,.vq_done
     ldh a,(rLY)
     sub a,#144
     cp a,#VB_LAST
-    ret nc
+    jr nc,.vq_done
     ld a,c
     add a,a
     add a,a
@@ -191,7 +212,11 @@ _vq_drain::
     ld (_vq_tail),a
     dec b
     jr nz,.vq_loop
-    ret
+.vq_done:
+    ld a,b
+    cp a,#8
+    ret z                   ; nothing written this time
+    jp vb_proof
 
 ; ---- CGB: all 8 palettes (64 bytes) from vb_src to the palette port vb_reg (0x68 BG,
 ; 0x6A OBJ). About 1.4 lines at double speed; the caller checks there is room. ----
@@ -218,7 +243,7 @@ _pal_put::
     ldh (c),a
     dec b
     jr nz,1$
-    ret
+    jp vb_proof
 
 ; ---- one animated tile: 16 bytes from vb_src to vb_dst (under a line on a DMG) ----
 _tile_put::
@@ -246,7 +271,7 @@ _tile_put::
     inc de
     dec b
     jr nz,1$
-    ret
+    jp vb_proof
 
 ; ---- main-loop VRAM writes with the LCD on ----
 ; The usual "wait until STAT says mode 0/1, then write" is only safe if nothing can run between

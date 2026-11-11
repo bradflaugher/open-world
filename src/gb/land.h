@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 extern uint16_t land_x0, land_y0;       /* committed window origin (metatiles) */
+extern uint16_t land_gx0, land_gy0;     /* ... as published to the camera gate (after the queueing) */
 extern uint8_t land_cache[256];         /* [(my & 15) << 4 | (mx & 15)] */
 extern uint8_t land_job;                /* 0 idle, 1 col+, 2 col-, 3 row+, 4 row- */
 extern uint16_t dbg_mt_calls;

@@ -1220,6 +1220,22 @@ class RomTest(Base):
         self.assertEqual(g.state(), GS_WORLD)
         self.check_land('after a damaged save')
 
+    def test_a_tap_during_the_map_survey_closes_it(self):
+        # the survey draws a ring of tiles per pass, which can take several frames on a DMG: a
+        # short tap of START in between used to be lost, and the map stayed open
+        g = self.g
+        g.new_world(self.SEED)
+        for keys in (['right', 'b'], ['down', 'b'], ['left', 'b']):
+            g.hold(keys, 150)                      # a few visited chunks to draw
+        for wait in (0, 3, 7, 12, 20):
+            g.press('start', after=2)
+            self.assertTrue(g.wait(lambda: g.state() == GS_MAP, 300))
+            g.run(wait)
+            g.press('start', hold=2, after=2)
+            self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 600),
+                            f'a tap {wait} frames into the map did not close it')
+            g.run(10)
+
     def test_no_frame_drops_walking(self):
         g = self.g
         g.new_world(self.SEED)

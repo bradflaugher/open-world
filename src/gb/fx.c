@@ -32,9 +32,9 @@ static const int8_t sway[16] = { 0, 1, 1, 2, 2, 2, 1, 1, 0, -1, -1, -2, -2, -2, 
 
 static uint8_t wx_rolled = 1;
 static int8_t wx_prev_dcx;
-/* per-drop constants: i * 9 mod 120 (row) and i * 5 (sway phase) */
-static const uint8_t wx_top[NUM_WX] = { 0, 9, 18, 27, 36, 45, 54, 63, 72, 81, 90, 99, 108 };
-static const uint8_t wx_sw[NUM_WX] = { 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60 };
+/* per-drop constants: i * 11 (row) and i * 5 (sway phase) */
+static const uint8_t wx_top[NUM_WX] = { 0, 11, 22, 33, 44, 55, 66, 77, 88, 99, 110 };
+static const uint8_t wx_sw[NUM_WX] = { 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50 };
 static uint8_t glow_last = 0xFF, glow_last_x, wx_hidden, hud_key[6];
 
 static void glow_draw(void)

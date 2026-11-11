@@ -29,6 +29,8 @@ static uint8_t tbuf[16];
 uint8_t map_done;              /* the survey finished (tests) */
 #define line_n (scratch)         /* sprites per line (144 of the shared buffer) */
 
+#define CLOSE_KEYS (J_START | J_B | J_A)
+
 static uint8_t map_xy(uint16_t mx, uint16_t my, uint8_t *sx, uint8_t *sy)
 {
     int16_t cx = (int16_t)((int16_t)(mx - world.start.x) >> 4) + 64 - MAP_CX0;
@@ -140,13 +142,18 @@ static void frame_tiles(void)
 void map_screen(void) BANKED
 {
     uint8_t i, r, tx, ty, px, py, done = 0, t = 0, dx, dy, k;
-    uint8_t keys_old;
     dbg_count_on = 0;
     map_done = 0;
     game_state = GS_MAP;
     sfx_play(SFX_MAP);
     ambient_mode(AMB_MAP);
     visit_mark();
+    /* START is still down: only a new press counts. From here the VBlank reads the pad: the
+       loads and the survey below can each take several frames on a DMG, and a tap of START
+       in between used to be lost (the map stayed open) */
+    pad_now = joypad();
+    pad_hits = 0;
+    pad_watch = 1;
     fade_to(16, 4);
     split_enable(0);
     anim_on = 0;
@@ -169,13 +176,12 @@ void map_screen(void) BANKED
     if (!map_xy(pl_mx, pl_my, &px, &py)) { px = 80; py = 72; }
     px = (uint8_t)((px - 16) >> 3);
     py = (uint8_t)((py - 16) >> 3);
-    keys_old = joypad();
     r = 0;
     for (;;) {
         if (!done) {
             /* ring r: tiles at Chebyshev distance r from (px, py) */
             k = 0;
-            for (ty = 0; ty < MAP_ROWS; ty++) {
+            for (ty = 0; ty < MAP_ROWS && !(pad_hits & CLOSE_KEYS); ty++) {
                 dy = (uint8_t)(ty > py ? ty - py : py - ty);
                 if (dy > r) continue;
                 for (tx = 0; tx < MAP_COLS; tx++) {
@@ -192,11 +198,10 @@ void map_screen(void) BANKED
         markers(t);
         frame_commit();
         frame_sync();
-        keys = joypad();
-        pressed = (uint8_t)(keys & ~keys_old);
-        keys_old = keys;
-        if (pressed & (J_START | J_B | J_A)) break;
+        __critical { keys = pad_now; pressed = pad_hits; pad_hits = 0; }
+        if (pressed & CLOSE_KEYS) break;
     }
+    pad_watch = 0;
     sfx_play(SFX_MAP);
     for (i = 0; i <= 16; i += 2) {
         pal_paper(paper_pal, i);

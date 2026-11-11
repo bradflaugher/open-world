@@ -19,6 +19,7 @@
 #include "assets.h"
 
 uint16_t land_x0, land_y0;
+uint16_t land_gx0, land_gy0;    /* the window as the camera gate sees it: see job_commit */
 uint8_t land_cache[256];
 uint8_t land_job;
 uint16_t dbg_mt_calls;
@@ -101,6 +102,15 @@ static void push_cell(uint16_t x, uint16_t y)
     bq_push((uint8_t)(x & 15), (uint8_t)(y & 15), m, t);
 }
 
+/* ... ahead of the queue: a fix-up of the line behind the streaming edge, which is the next
+   to scroll into view and must not wait behind a column still being drained */
+static void push_fix(uint16_t x, uint16_t y)
+{
+    uint8_t t[4], m = land_cache[SLOT(x, y)];
+    cell_tiles(x, y, m, t);
+    bq_push_front((uint8_t)(x & 15), (uint8_t)(y & 15), m, t);
+}
+
 uint8_t land_in(uint16_t mx, uint16_t my)
 {
     return (uint8_t)((uint16_t)(mx - land_x0) < 15u && (uint16_t)(my - land_y0) < 15u);
@@ -124,7 +134,7 @@ void land_set(uint16_t mx, uint16_t my, uint8_t mt)
     }
     land_cache[SLOT(mx, my)] = mt;
     land_changed = 1;
-    push_cell(mx, my);
+    push_fix(mx, my);          /* an edit is in view: ahead of any column still queued */
 }
 
 void land_refill(uint16_t cmx, uint16_t cmy)
@@ -134,8 +144,8 @@ void land_refill(uint16_t cmx, uint16_t cmy)
     uint16_t x, y;
     land_job = 0;
     land_changed = 1;
-    land_x0 = (uint16_t)(cmx - 2);
-    land_y0 = (uint16_t)(cmy - 3);
+    land_gx0 = land_x0 = (uint16_t)(cmx - 2);
+    land_gy0 = land_y0 = (uint16_t)(cmy - 3);
     /* the queue may still hold writes for the old window */
     vram_flush();
     for (j = 0; j < 16; j++) {
@@ -187,21 +197,27 @@ static void job_commit(void)
         for (i = 0; i < 15; i++) land_cache[SLOT(job_c, (uint16_t)(land_y0 + i))] = job_buf[i];
         __critical { if (land_job == 1) land_x0++; else land_x0--; }
         fix = land_job == 1 ? (uint16_t)(job_c - 1) : (uint16_t)(job_c + 1);
+        /* the line behind first: it is the one nearer the view (now fully known) */
         for (i = 0; i < 15; i++) {
             v = (uint16_t)(land_y0 + i);
-            push_cell(job_c, v);
-            if (fix_needed(fix, v, 1, job_c)) push_cell(fix, v);   /* now fully known */
+            if (fix_needed(fix, v, 1, job_c)) push_fix(fix, v);
         }
+        for (i = 0; i < 15; i++) push_cell(job_c, (uint16_t)(land_y0 + i));
     } else {
         for (i = 0; i < 15; i++) land_cache[SLOT((uint16_t)(land_x0 + i), job_c)] = job_buf[i];
         __critical { if (land_job == 3) land_y0++; else land_y0--; }
         fix = land_job == 3 ? (uint16_t)(job_c - 1) : (uint16_t)(job_c + 1);
         for (i = 0; i < 15; i++) {
             v = (uint16_t)(land_x0 + i);
-            push_cell(v, job_c);
-            if (fix_needed(v, fix, 0, job_c)) push_cell(v, fix);
+            if (fix_needed(v, fix, 0, job_c)) push_fix(v, fix);
         }
+        for (i = 0; i < 15; i++) push_cell((uint16_t)(land_x0 + i), job_c);
     }
+    /* Only now may the view move on into the new line's side. Queueing the cells above takes
+       a few frames on a DMG (the game frame has most of the CPU); if the camera gate saw the
+       new origin from the start, the wanderer walked on meanwhile and the far halves of the
+       line behind (drawn before its neighbours were known) showed for a frame or two. */
+    __critical { land_gx0 = land_x0; land_gy0 = land_y0; }
     land_changed = 1;
     land_job = 0;
 }
