@@ -197,11 +197,17 @@ static void job_commit(void)
         for (i = 0; i < 15; i++) land_cache[SLOT(job_c, (uint16_t)(land_y0 + i))] = job_buf[i];
         __critical { if (land_job == 1) land_x0++; else land_x0--; }
         fix = land_job == 1 ? (uint16_t)(job_c - 1) : (uint16_t)(job_c + 1);
-        /* the line behind first: it is the one nearer the view (now fully known) */
+        /* The line behind first: it is the one nearer the view (now fully known). Only once
+           its fix-ups are queued (at the front) may the view move on that way: working them
+           out takes a frame or two on a DMG (the game frame has most of the CPU), and if the
+           camera gate saw the new origin from the start the wanderer walked on meanwhile into
+           shore edges drawn before their neighbours were known. The new line itself is a
+           cell further out and has the time it always had. */
         for (i = 0; i < 15; i++) {
             v = (uint16_t)(land_y0 + i);
             if (fix_needed(fix, v, 1, job_c)) push_fix(fix, v);
         }
+        __critical { land_gx0 = land_x0; }
         for (i = 0; i < 15; i++) push_cell(job_c, (uint16_t)(land_y0 + i));
     } else {
         for (i = 0; i < 15; i++) land_cache[SLOT((uint16_t)(land_x0 + i), job_c)] = job_buf[i];
@@ -211,13 +217,9 @@ static void job_commit(void)
             v = (uint16_t)(land_x0 + i);
             if (fix_needed(v, fix, 0, job_c)) push_fix(v, fix);
         }
+        __critical { land_gy0 = land_y0; }
         for (i = 0; i < 15; i++) push_cell((uint16_t)(land_x0 + i), job_c);
     }
-    /* Only now may the view move on into the new line's side. Queueing the cells above takes
-       a few frames on a DMG (the game frame has most of the CPU); if the camera gate saw the
-       new origin from the start, the wanderer walked on meanwhile and the far halves of the
-       line behind (drawn before its neighbours were known) showed for a frame or two. */
-    __critical { land_gx0 = land_x0; land_gy0 = land_y0; }
     land_changed = 1;
     land_job = 0;
 }
