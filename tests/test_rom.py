@@ -1283,6 +1283,82 @@ class RomTest(Base):
                             f'a tap {wait} frames into the map did not close it')
             g.run(10)
 
+    def chart_px(self, x, y):
+        """ink (0-3) of chart pixel (x, y) of the open map, from the tile patterns in VRAM"""
+        g = self.g
+        t = (y >> 3) * 16 + (x >> 3)
+        a = (0x9000 + t * 16 if t < 128 else 0x8800 + (t - 128) * 16) + (y & 7) * 2
+        bit = 7 - (x & 7)
+        return ((g.vram(a) >> bit) & 1) | (((g.vram(a + 1) >> bit) & 1) << 1)
+
+    def test_map_draws_the_roads_you_have_earned_and_pins_what_is_off_the_chart(self):
+        g = self.g
+        g.new_world(self.SEED)
+        w = g.world()
+        g.set_u8('beacons_lit', 1)
+        g.run(4)
+        g.press('start', after=10)
+        self.assertTrue(g.wait(lambda: g.u8('map_done'), 2000))
+        g.run(4)
+        # the chart is centred on the wanderer (at the start): 2 px per chunk, 64 x 56 chunks
+        ox, oy = 32, 36
+
+        def px(pos):
+            hx = max(0, min(255, ((pos[0] - w['start'][0] + 0x8000 & 0xFFFF) - 0x8000 >> 3) + 128))
+            hy = max(0, min(255, ((pos[1] - w['start'][1] + 0x8000 & 0xFFFF) - 0x8000 >> 3) + 128))
+            return hx - 2 * ox, hy - 2 * oy
+
+        def road_ink(target):
+            (x0, y0), (x1, y1) = px(w['start']), px(target)
+            n = max(abs(x1 - x0), abs(y1 - y0))
+            hits = 0
+            for i in range(6, n - 4):         # (clear of the walked chunks round the start)
+                x, y = x0 + (x1 - x0) * i // n, y0 + (y1 - y0) * i // n
+                if not (0 <= x < 128 and 0 <= y < 112):
+                    continue
+                if any(self.chart_px(x + dx, y + dy) == 3 for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                       if 0 <= x + dx < 128 and 0 <= y + dy < 112):
+                    hits += 1
+            return hits, n
+        hits, n = road_ink(w['beacon'][0])
+        self.assertGreater(hits, (n - 10) * 0.8, 'the road to the lit beacon is not on the chart')
+        for tgt in (w['beacon'][1], w['beacon'][2], w['heart']):
+            self.assertEqual(road_ink(tgt)[0], 0, 'a road that has not been earned is on the chart')
+        # the wanderer in the middle; the beacons where they are (all three lie on this chart)
+        m = g.pb.memory
+        spr = {(m[0xFE00 + i * 4 + 2], m[0xFE00 + i * 4 + 1] - 8 + 3 - 16, m[0xFE00 + i * 4] - 16 + 3 - 16)
+               for i in range(40) if m[0xFE00 + i * 4]}
+        for b in w['beacon']:
+            self.assertIn((g.spr_tile('SPR_MAP_BEACON'),) + px(b), spr)
+        g.press('start', after=10)
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 1500))
+        # the Heart, revealed: its road is drawn, and the Heart itself (off this chart to the
+        # north-east in this world) is pinned to the chart's edge
+        g.set_u8('beacons_lit', 7)
+        g.set_u8('heart_revealed', 1)
+        g.run(4)
+        g.press('start', after=10)
+        self.assertTrue(g.wait(lambda: g.u8('map_done'), 2000))
+        hx, hy = px(w['heart'])
+        self.assertFalse(0 <= hx < 128 and 0 <= hy < 112, 'pick a seed whose Heart is off the first chart')
+        hits, n = road_ink(w['heart'])
+        self.assertGreater(hits, 20, 'the road to the Heart is not on the chart')
+        heart = g.spr_tile('SPR_MAP_HEART')
+        seen = set()
+        for _ in range(140):                  # (it pulses)
+            g.run(1)
+            seen |= {(m[0xFE00 + i * 4 + 1] - 8 + 3 - 16, m[0xFE00 + i * 4] - 16 + 3 - 16)
+                     for i in range(40) if m[0xFE00 + i * 4] and m[0xFE00 + i * 4 + 2] == heart}
+        self.assertEqual(seen, {(max(0, min(127, hx)), max(0, min(111, hy)))})
+        self.check_world_after_map()
+
+    def check_world_after_map(self):
+        g = self.g
+        g.press('start', after=10)
+        self.assertTrue(g.wait(lambda: g.state() == GS_WORLD and g.u8('pal_fade') == 0, 1500))
+        g.run(10)
+        self.check_land('after the map')
+
     def test_no_frame_drops_walking(self):
         g = self.g
         g.new_world(self.SEED)
@@ -1435,32 +1511,35 @@ class RomTest(Base):
                 if o[0] and o[2] == sit:
                     return o
             return None
-        # stroll about until a bird stands somewhere in view
-        found = None
-        for k in range(40):
-            g.hold([('right', 'down', 'left', 'up')[k & 3]], 50)
-            worst = max(worst, max(g.oam_line_counts()))
-            found = bird()
-            if found:
+        # stroll about until a bird stands somewhere in view, then walk at it: it flies off
+        # before you reach it (one behind water or trees is left alone: try the next)
+        k = 0
+        for attempt in range(10):
+            found = None
+            while k < 400 and not found:
+                g.hold([('right', 'down', 'left', 'up')[(k >> 1) & 3]], 50)
+                k += 1
+                worst = max(worst, max(g.oam_line_counts()))
+                found = bird()
+            self.assertIsNotNone(found, 'no bird ever landed')
+            for _ in range(150):
+                o = bird()
+                if not o or g.u8('dbg_flushed'):
+                    break
+                bx, by = o[1] - 4, o[0] - 16 + 14            # its feet on screen (the wanderer: 80, 92)
+                keys = []
+                if bx < 76:
+                    keys.append('left')
+                elif bx > 84:
+                    keys.append('right')
+                if by < 88:
+                    keys.append('up')
+                elif by > 96:
+                    keys.append('down')
+                g.hold(keys or ['right'], 2)
+            if g.u8('dbg_flushed'):
                 break
-        self.assertIsNotNone(found, 'no bird ever landed')
         self.assertGreaterEqual(g.u8('dbg_birds'), 1)
-        # walk at it: it flies off before you reach it
-        for _ in range(400):
-            o = bird()
-            if not o or g.u8('dbg_flushed'):
-                break
-            bx, by = o[1] - 4, o[0] - 16 + 14            # its feet on screen (the wanderer: 80, 92)
-            keys = []
-            if bx < 76:
-                keys.append('left')
-            elif bx > 84:
-                keys.append('right')
-            if by < 88:
-                keys.append('up')
-            elif by > 96:
-                keys.append('down')
-            g.hold(keys or ['right'], 2)
         self.assertGreaterEqual(g.u8('dbg_flushed'), 1, 'the bird never took off')
         self.assertTrue(g.wait(lambda: any(g.oam(i)[0] and g.oam(i)[2] in fly for i in (27, 28)), 10), 'no flying bird')
         self.assertTrue(g.wait(lambda: not any(g.oam(i)[0] and g.oam(i)[2] in fly for i in (27, 28)), 200),

@@ -1,9 +1,11 @@
 /* map.c - OPEN WORLD map (START): the visited-chunk bitmap (128 x 128 chunks of 16x16
- * metatiles round the start, +-1024) drawn at one pixel per chunk: a 128 x 112 px chart of chunk
- * rows 8..119 (+-896 metatiles north-south, which holds every beacon and the Heart), in 224
- * unique BG tiles (0..223) with the frame tiles from map_tiles at 224+. It "surveys" outwards
- * from the wanderer with the LCD on, drawing only tiles that hold visited chunks; the rest
- * stays fog. */
+ * metatiles round the start, +-1024) drawn at two pixels per chunk: a 128 x 112 px chart of
+ * 64 x 56 chunks (about +-500 metatiles) centred on the wanderer, in 224 unique BG tiles
+ * (0..223) with the frame tiles from map_tiles at 224+. It "surveys" outwards from the wanderer
+ * with the LCD on, drawing only tiles that hold visited chunks or a road; the rest stays fog.
+ * A beacon or the Heart that lies off the chart is pinned to its edge, in its direction.
+ * The ancient road to each beacon you have lit is drawn as a dotted line from the first fire,
+ * and the road to the Heart once the Heart is revealed: the way there, without a word. */
 #pragma bank 255
 #include <gb/gb.h>
 #include <gb/cgb.h>
@@ -17,8 +19,7 @@
 #define MAP_T0     224          /* frame tiles live here */
 #define MAP_COLS   16
 #define MAP_ROWS   14
-#define MAP_CX0    0            /* first chunk column / row shown (of 128) */
-#define MAP_CY0    8
+static uint8_t map_ox, map_oy;      /* first chunk column / row on the chart (of 128) */
 
 /* in RAM: pal.c (another bank) reads it */
 static uint16_t paper_pal[4] = { 0x6FBE, 0x4ED7, 0x2E10, 0x1485 };
@@ -31,50 +32,127 @@ uint8_t map_done;              /* the survey finished (tests) */
 
 #define CLOSE_KEYS (J_START | J_B | J_A)
 
+/* a world coordinate in half chunks from the bitmap's edge (0..255, the start at 128) */
+static uint8_t half_of(uint16_t m, uint16_t s)
+{
+    int16_t d = (int16_t)(((int16_t)(m - s) >> 3) + 128);
+    if (d < 0) d = 0;
+    if (d > 255) d = 255;
+    return (uint8_t)d;
+}
+
+/* chart pixel (0..127, 0..111) of a world position; off the chart: pinned to the edge */
 static uint8_t map_xy(uint16_t mx, uint16_t my, uint8_t *sx, uint8_t *sy)
 {
-    int16_t cx = (int16_t)((int16_t)(mx - world.start.x) >> 4) + 64 - MAP_CX0;
-    int16_t cy = (int16_t)((int16_t)(my - world.start.y) >> 4) + 64 - MAP_CY0;
-    if (cx < 0 || cx >= MAP_COLS * 8 || cy < 0 || cy >= MAP_ROWS * 8) return 0;
-    *sx = (uint8_t)(16 + cx);
-    *sy = (uint8_t)(16 + cy);
+    int16_t x = (int16_t)half_of(mx, world.start.x) - (int16_t)((uint16_t)map_ox << 1);
+    int16_t y = (int16_t)half_of(my, world.start.y) - (int16_t)((uint16_t)map_oy << 1);
+    if (x < 0) x = 0;
+    if (x > MAP_COLS * 8 - 1) x = MAP_COLS * 8 - 1;
+    if (y < 0) y = 0;
+    if (y > MAP_ROWS * 8 - 1) y = MAP_ROWS * 8 - 1;
+    *sx = (uint8_t)(16 + x);
+    *sy = (uint8_t)(16 + y);
     return 1;
 }
 
-/* does map tile (tx, ty) hold any visited chunk? (8 chunks x 8 rows = 8 bitmap bytes) */
+#define VISITED(cx, cy) (visited[((uint16_t)(cy) << 4) | ((cx) >> 3)] & (uint8_t)(1 << ((cx) & 7)))
+
+/* does map tile (tx, ty) hold any visited chunk? (4 x 4 chunks) */
 static uint8_t tile_visited(uint8_t tx, uint8_t ty)
 {
-    uint8_t y, cy = (uint8_t)(MAP_CY0 + (ty << 3));
-    for (y = 0; y < 8; y++, cy++)
-        if (visited[((uint16_t)cy << 4) | (uint8_t)((MAP_CX0 >> 3) + tx)]) return 1;
+    uint8_t i, j, cx, cy = (uint8_t)(map_oy + (ty << 2));
+    for (j = 0; j < 4; j++, cy++)
+        for (i = 0, cx = (uint8_t)(map_ox + (tx << 2)); i < 4; i++, cx++)
+            if (VISITED(cx, cy)) return 1;
     return 0;
 }
 
-/* one 8x8 map tile = 8x8 chunks, one pixel each */
+/* ---- roads: straight lines from the first fire, in chart pixels ---- */
+#define NROADS 4                      /* beacons 0-2, the Heart */
+static int16_t rd_x0, rd_y0, rd_x1[NROADS], rd_y1[NROADS];
+static int16_t rd_s[NROADS];          /* minor per major step, in 1/128ths */
+static uint8_t rd_on, rd_ymaj;        /* bit i: road i is drawn / runs mostly north-south */
+
+static void roads_setup(void)
+{
+    uint8_t i;
+    int16_t dx, dy, adx, ady;
+    rd_on = (uint8_t)(beacons_lit | (heart_revealed ? 8 : 0));
+    rd_ymaj = 0;
+    rd_x0 = (int16_t)128 - (int16_t)((uint16_t)map_ox << 1);
+    rd_y0 = (int16_t)128 - (int16_t)((uint16_t)map_oy << 1);
+    for (i = 0; i < NROADS; i++) {
+        const wpos_t *t = i < 3 ? &world.beacon[i] : &world.heart;
+        rd_x1[i] = (int16_t)half_of(t->x, world.start.x) - (int16_t)((uint16_t)map_ox << 1);
+        rd_y1[i] = (int16_t)half_of(t->y, world.start.y) - (int16_t)((uint16_t)map_oy << 1);
+        dx = (int16_t)(rd_x1[i] - rd_x0); adx = dx < 0 ? -dx : dx;
+        dy = (int16_t)(rd_y1[i] - rd_y0); ady = dy < 0 ? -dy : dy;
+        if (!adx && !ady) { rd_on &= (uint8_t)~(1 << i); continue; }
+        if (ady > adx) { rd_ymaj |= (uint8_t)(1 << i); rd_s[i] = (int16_t)((dx * 128) / dy); }
+        else rd_s[i] = (int16_t)((dy * 128) / dx);
+    }
+}
+
+/* road i through map tile (tx, ty): 1 if it passes; with plot, its dots go into tbuf (ink 3) */
+static uint8_t road_tile(uint8_t i, uint8_t tx, uint8_t ty, uint8_t plot)
+{
+    int16_t a, a0, a1, b, b0, lo, hi, m0, m1, n0;
+    uint8_t ym = (uint8_t)(rd_ymaj & (1 << i)), any = 0, r, m;
+    if (ym) { a0 = (int16_t)(ty << 3); b0 = (int16_t)(tx << 3); m0 = rd_y0; m1 = rd_y1[i]; n0 = rd_x0; }
+    else { a0 = (int16_t)(tx << 3); b0 = (int16_t)(ty << 3); m0 = rd_x0; m1 = rd_x1[i]; n0 = rd_y0; }
+    a1 = (int16_t)(a0 + 7);
+    lo = m0 < m1 ? m0 : m1;
+    hi = m0 < m1 ? m1 : m0;
+    if (a0 < lo) a0 = lo;
+    if (a1 > hi) a1 = hi;
+    if (a0 > a1) return 0;
+    /* where it enters and leaves this strip: both to one side of the tile means it misses */
+    lo = (int16_t)(n0 + (((int16_t)(a0 - m0) * rd_s[i]) >> 7));
+    hi = (int16_t)(n0 + (((int16_t)(a1 - m0) * rd_s[i]) >> 7));
+    if ((lo < b0 && hi < b0) || (lo > b0 + 7 && hi > b0 + 7)) return 0;
+    if (!plot) return 1;
+    for (a = a0; a <= a1; a++) {
+        if ((uint8_t)(a - m0) & 1) continue;                 /* dotted */
+        b = (int16_t)(n0 + (((int16_t)(a - m0) * rd_s[i]) >> 7));
+        if (b < b0 || b > b0 + 7) continue;
+        if (ym) { r = (uint8_t)((uint8_t)a & 7); m = (uint8_t)(0x80 >> ((uint8_t)b & 7)); }
+        else { r = (uint8_t)((uint8_t)b & 7); m = (uint8_t)(0x80 >> ((uint8_t)a & 7)); }
+        tbuf[r << 1] |= m;
+        tbuf[(r << 1) + 1] |= m;
+        any = 1;
+    }
+    return any;
+}
+
+static uint8_t tile_road(uint8_t tx, uint8_t ty)
+{
+    uint8_t i;
+    for (i = 0; i < NROADS; i++)
+        if ((rd_on & (1 << i)) && road_tile(i, tx, ty, 0)) return 1;
+    return 0;
+}
+
+/* one 8x8 map tile = 4x4 chunks, 2x2 pixels each, and the roads over it */
 static void render_tile(uint8_t tx, uint8_t ty)
 {
-    uint8_t y, x, cx0 = (uint8_t)(MAP_CX0 + (tx << 3)), cy, bits, s, lo, hi, m2;
-    uint16_t mx0 = (uint16_t)(world.start.x - 1024 + ((uint16_t)cx0 << 4) + 8), my;
-    for (y = 0; y < 8; y++) {
-        cy = (uint8_t)(MAP_CY0 + (ty << 3) + y);
-        bits = visited[((uint16_t)cy << 4) | (cx0 >> 3)];
-        lo = fog[y * 2];
-        hi = fog[y * 2 + 1];
-        if (bits) {
-            my = (uint16_t)(world.start.y - 1024 + ((uint16_t)cy << 4) + 8);
-            for (x = 0; x < 8; x++) {
-                if (!(bits & (1 << x))) continue;
-                s = shade_col[world_map_shade((uint16_t)(mx0 + ((uint16_t)x << 4)), my) & 3];
-                m2 = (uint8_t)(0x80 >> x);
-                lo &= (uint8_t)~m2;
-                hi &= (uint8_t)~m2;
-                if (s & 1) lo |= m2;
-                if (s & 2) hi |= m2;
-            }
+    uint8_t i, j, cx, cy = (uint8_t)(map_oy + (ty << 2)), s, m2, *p;
+    uint16_t mx, my;
+    memcpy(tbuf, fog, 16);
+    for (j = 0; j < 4; j++, cy++) {
+        my = (uint16_t)(world.start.y - 1024 + ((uint16_t)cy << 4) + 8);
+        p = &tbuf[j << 2];
+        for (i = 0, cx = (uint8_t)(map_ox + (tx << 2)); i < 4; i++, cx++) {
+            if (!VISITED(cx, cy)) continue;
+            mx = (uint16_t)(world.start.x - 1024 + ((uint16_t)cx << 4) + 8);
+            s = shade_col[world_map_shade(mx, my) & 3];
+            m2 = (uint8_t)(0xC0 >> (i << 1));
+            p[0] &= (uint8_t)~m2; p[1] &= (uint8_t)~m2; p[2] &= (uint8_t)~m2; p[3] &= (uint8_t)~m2;
+            if (s & 1) { p[0] |= m2; p[2] |= m2; }
+            if (s & 2) { p[1] |= m2; p[3] |= m2; }
         }
-        tbuf[y * 2] = lo;
-        tbuf[y * 2 + 1] = hi;
     }
+    for (i = 0; i < NROADS; i++)
+        if (rd_on & (1 << i)) road_tile(i, tx, ty, 1);
     set_bkg_data((uint8_t)(ty * MAP_COLS + tx), 1, tbuf);
 }
 
@@ -159,6 +237,12 @@ void map_screen(void) BANKED
     anim_on = 0;
     hide_sprites_from(0);
     wait_frames(1);
+    /* the chart: 64 x 56 chunks round the wanderer, kept inside the bitmap */
+    px = (uint8_t)(half_of(pl_mx, world.start.x) >> 1);
+    py = (uint8_t)(half_of(pl_my, world.start.y) >> 1);
+    map_ox = (uint8_t)(px < 32 ? 0 : px > 96 ? 64 : px - 32);
+    map_oy = (uint8_t)(py < 28 ? 0 : py > 100 ? 72 : py - 28);
+    roads_setup();
     /* tiles: frame set at 224, every map tile starts as fog */
     gfx_load_map(MAP_T0, fog);
     for (i = 0; i < 8; i++) { fog[i * 2] = fog[i * 2 + 1]; fog[i * 2 + 1] = 0; }   /* colours 1,2 -> 0,1 */
@@ -173,7 +257,7 @@ void map_screen(void) BANKED
         wait_frames(2);
     }
     /* survey outwards from the wanderer, a ring of tiles at a time */
-    if (!map_xy(pl_mx, pl_my, &px, &py)) { px = 80; py = 72; }
+    map_xy(pl_mx, pl_my, &px, &py);
     px = (uint8_t)((px - 16) >> 3);
     py = (uint8_t)((py - 16) >> 3);
     r = 0;
@@ -188,7 +272,7 @@ void map_screen(void) BANKED
                     dx = (uint8_t)(tx > px ? tx - px : px - tx);
                     if (dx > r) continue;
                     if (dx != r && dy != r) continue;
-                    if (tile_visited(tx, ty)) { render_tile(tx, ty); k++; }
+                    if (tile_visited(tx, ty) || tile_road(tx, ty)) { render_tile(tx, ty); k++; }
                 }
             }
             r++;
